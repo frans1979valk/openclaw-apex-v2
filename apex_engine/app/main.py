@@ -331,6 +331,14 @@ def main():
             except Exception as e:
                 print(f"[agents] Fout: {e}")
 
+        # Bewaar config_overrides van control_api (proposals) bij elke schrijfcyclus
+        _existing_overrides = None
+        try:
+            with open("/var/apex/bot_state.json", "r", encoding="utf-8") as _f:
+                _existing_overrides = json.load(_f).get("config_overrides")
+        except Exception:
+            pass
+
         write_state("/var/apex/bot_state.json", {
             "ts":             datetime.now(timezone.utc).isoformat(),
             "mode":           TRADING_MODE,
@@ -344,6 +352,7 @@ def main():
             "last_agent":     last_agent_result,
             "pre_crash_scores": last_pre_crash,
             "cascade_active": btc_cascade.is_cascade_active,
+            "config_overrides": _existing_overrides,
         })
         time.sleep(10)
 

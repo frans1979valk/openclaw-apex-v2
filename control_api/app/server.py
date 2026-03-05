@@ -221,10 +221,49 @@ def apply_proposal(proposal_id: int, x_api_key: str | None = Header(default=None
     conn = sqlite3.connect(DB_PATH)
     ensure_tables(conn)
     cur = conn.cursor()
+    # Lees proposal data voor executie
+    cur.execute("SELECT agent, params_json, reason, status FROM proposals WHERE id=?", (proposal_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Proposal niet gevonden")
+    agent, params_json, reason, status = row
+    if status == "applied":
+        conn.close()
+        return {"ok": True, "applied": proposal_id, "message": "Al uitgevoerd"}
+    # Update status
     cur.execute("UPDATE proposals SET status='applied' WHERE id=?", (proposal_id,))
     conn.commit()
     conn.close()
-    return {"ok": True, "applied": proposal_id}
+    # Voer de parameter wijziging daadwerkelijk uit
+    try:
+        params = json.loads(params_json) if isinstance(params_json, str) else (params_json or {})
+    except (json.JSONDecodeError, TypeError):
+        params = {}
+    if params:
+        _execute_proposal(str(proposal_id), "PARAM_CHANGE", params, reason or "")
+    return {"ok": True, "applied": proposal_id, "executed": True}
+
+
+@app.post("/proposals/{proposal_id}/reject")
+def reject_proposal(proposal_id: int, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    auth(x_api_key)
+    conn = sqlite3.connect(DB_PATH)
+    ensure_tables(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM proposals WHERE id=?", (proposal_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Proposal niet gevonden")
+    if row[0] == "applied":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Proposal is al uitgevoerd, kan niet meer afgewezen worden")
+    cur.execute("UPDATE proposals SET status='rejected' WHERE id=?", (proposal_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "rejected": proposal_id}
+
 
 @app.get("/backtest/{symbol}")
 def backtest(symbol: str, interval: str = "1h", limit: int = 500,
