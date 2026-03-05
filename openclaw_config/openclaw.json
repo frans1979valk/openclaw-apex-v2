@@ -35,7 +35,8 @@
         "name": "Operator Risk",
         "model": "anthropic/claude-sonnet-4-6",
         "skills": [
-          "gatekeeper"
+          "gatekeeper",
+          "macro_context_oracle"
         ],
         "identity": {
           "name": "OpenClaw Risk",
@@ -48,7 +49,8 @@
         "model": "anthropic/claude-sonnet-4-6",
         "skills": [
           "browser",
-          "gatekeeper"
+          "gatekeeper",
+          "macro_context_oracle"
         ],
         "identity": {
           "name": "OpenClaw Research",

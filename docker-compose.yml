@@ -91,6 +91,31 @@ services:
     depends_on:
       - control_api
 
+  # ── Market Oracle Sandbox ────────────────────────────────────────────────────
+  # Geïsoleerde container: GEEN exchange keys, GEEN AI keys.
+  # Alleen publieke RSS + Yahoo Finance. Resource-limited.
+  market_oracle_sandbox:
+    build:
+      context: .
+      dockerfile: market_oracle_sandbox/Dockerfile
+    volumes:
+      - ./skills/market_oracle/tools:/workspace/tools:ro
+    networks:
+      - agent_net
+    ports:
+      - "127.0.0.1:8095:8095"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8095/health | grep -q '\"status\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
   tg_coordinator_bot:
     build:
       context: ./telegram

@@ -1339,3 +1339,355 @@ async def sse_stream(token: str = Query(default="")):
             await asyncio.sleep(2)
 
     return EventSourceResponse(event_generator())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GATEKEEPER API — Structured proposal system for OpenClaw Operator
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Policy constants (hardcoded) ──────────────────────────────────────────────
+PARAM_BOUNDS = {
+    "rsi_buy_threshold":  (20, 40),
+    "rsi_sell_threshold": (60, 80),
+    "stoploss_pct":       (1.5, 6.0),
+    "takeprofit_pct":     (3.0, 12.0),
+    "position_size_base": (1, 5),
+}
+MAX_APPLIES_PER_DAY = 3
+FLASHCRASH_AUTO_ACTIONS = {"PAUSE", "NO_BUY", "EXIT_ONLY"}
+PROPOSAL_TYPES = {"PAUSE", "RESUME", "PARAM_CHANGE", "COIN_ALLOW", "RUN_BACKTEST", "DEPLOY_STAGING"}
+
+_applies_today: dict = {"date": "", "count": 0}
+_macro_context: dict = {}
+_confirm_tokens: dict = {}  # {proposal_id: otp_code}
+
+
+def _ensure_proposals_v2(conn):
+    """Ensure proposals table has the v2 columns."""
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS proposals_v2(
+        id TEXT PRIMARY KEY,
+        ts TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        reason TEXT NOT NULL DEFAULT '',
+        requested_by TEXT NOT NULL DEFAULT 'unknown',
+        requires_confirm INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'pending',
+        confirmed_at TEXT,
+        applied_at TEXT
+    )""")
+    conn.commit()
+
+
+def _check_applies_limit():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _applies_today["date"] != today:
+        _applies_today["date"] = today
+        _applies_today["count"] = 0
+    if _applies_today["count"] >= MAX_APPLIES_PER_DAY:
+        raise HTTPException(status_code=429, detail=f"Max {MAX_APPLIES_PER_DAY} applies per dag bereikt")
+
+
+def _validate_param_bounds(payload: dict) -> list:
+    """Validate and clamp params. Returns list of violations."""
+    violations = []
+    for key, (lo, hi) in PARAM_BOUNDS.items():
+        if key in payload:
+            val = payload[key]
+            if not isinstance(val, (int, float)):
+                violations.append(f"{key}: niet numeriek ({val})")
+                continue
+            if val < lo or val > hi:
+                violations.append(f"{key}: {val} buiten grenzen [{lo}, {hi}]")
+                payload[key] = max(lo, min(hi, val))  # clamp
+    return violations
+
+
+def _send_confirm_telegram(proposal_id: str, ptype: str, reason: str, otp: str):
+    """Stuur confirm verzoek naar Telegram."""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+    text = (
+        f"🔐 *VOORSTEL {proposal_id}*\n"
+        f"Type: `{ptype}`\n"
+        f"Reden: {reason}\n\n"
+        f"Bevestig met OTP: `{otp}`\n"
+        f"Of via API: `POST /proposals/{proposal_id}/confirm` met OTP header"
+    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+# ── GET /status ───────────────────────────────────────────────────────────────
+@app.get("/status")
+def gatekeeper_status(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Volledige platform status voor OpenClaw Operator."""
+    auth(x_api_key)
+
+    # Trading state
+    trading = _trading_halt.copy()
+
+    # Bot state (latest signals)
+    state = {}
+    try:
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        pass
+
+    # Risk flags
+    risk_flags = []
+    crash_max = state.get("crash_max_24h", 0)
+    if crash_max and crash_max > 70:
+        risk_flags.append(f"HIGH_CRASH_SCORE:{crash_max}")
+    wr = state.get("overall_win_rate")
+    if wr is not None and wr < 40:
+        risk_flags.append(f"LOW_WIN_RATE:{wr:.0f}%")
+    if trading.get("halted"):
+        risk_flags.append("TRADING_HALTED")
+    pu = trading.get("paused_until")
+    if pu:
+        risk_flags.append(f"PAUSED_UNTIL:{pu}")
+
+    return {
+        "mode": "demo",
+        "allow_live": False,
+        "trading": trading,
+        "last_signals": state.get("coin_signals", {}),
+        "open_positions": state.get("open_positions", []),
+        "crash_max_24h": crash_max,
+        "overall_win_rate": wr,
+        "risk_flags": risk_flags,
+        "macro_context": _macro_context,
+        "applies_today": _applies_today["count"],
+        "max_applies_per_day": MAX_APPLIES_PER_DAY,
+    }
+
+
+# ── POST /proposals ──────────────────────────────────────────────────────────
+class ProposalV2(BaseModel):
+    type: str
+    payload: dict = {}
+    reason: str = ""
+    requested_by: str = "openclaw_operator"
+    requires_confirm: bool = True
+
+
+@app.post("/proposals")
+def create_proposal(body: ProposalV2, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Dien een nieuw voorstel in via de Gatekeeper."""
+    auth(x_api_key)
+
+    if body.type not in PROPOSAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"Ongeldig type: {body.type}. Toegestaan: {PROPOSAL_TYPES}")
+
+    # Validate params for PARAM_CHANGE
+    violations = []
+    if body.type == "PARAM_CHANGE":
+        violations = _validate_param_bounds(body.payload)
+
+    # Flash-crash auto-actions don't require confirm
+    auto_apply = body.type in FLASHCRASH_AUTO_ACTIONS and not body.requires_confirm
+
+    proposal_id = secrets.token_hex(4)
+    ts = datetime.now(timezone.utc).isoformat()
+    otp = str(random.randint(100000, 999999))
+
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_proposals_v2(conn)
+    conn.execute(
+        "INSERT INTO proposals_v2(id, ts, type, payload_json, reason, requested_by, requires_confirm, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (proposal_id, ts, body.type, json.dumps(body.payload), body.reason,
+         body.requested_by, 0 if auto_apply else 1,
+         "auto_applied" if auto_apply else "pending"),
+    )
+    conn.commit()
+    conn.close()
+
+    result = {
+        "ok": True,
+        "proposal_id": proposal_id,
+        "type": body.type,
+        "status": "auto_applied" if auto_apply else "pending",
+        "requires_confirm": not auto_apply,
+    }
+
+    if violations:
+        result["param_violations"] = violations
+        result["note"] = "Parameters zijn geclamped naar PARAM_BOUNDS"
+
+    if auto_apply:
+        # Execute flash-crash action immediately
+        _execute_proposal(proposal_id, body.type, body.payload, body.reason)
+        result["message"] = f"Flash-crash actie {body.type} automatisch uitgevoerd"
+    else:
+        # Store OTP and send to Telegram
+        _confirm_tokens[proposal_id] = otp
+        _send_confirm_telegram(proposal_id, body.type, body.reason, otp)
+        result["message"] = "Wacht op Telegram bevestiging (OTP)"
+
+    return result
+
+
+# ── GET /proposals?state=pending ──────────────────────────────────────────────
+@app.get("/proposals/v2")
+def list_proposals_v2(
+    state: str = Query(default="all"),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Lijst voorstellen met optionele status filter."""
+    auth(x_api_key)
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_proposals_v2(conn)
+    cur = conn.cursor()
+    if state == "all":
+        cur.execute("SELECT * FROM proposals_v2 ORDER BY ts DESC LIMIT 100")
+    else:
+        cur.execute("SELECT * FROM proposals_v2 WHERE status=? ORDER BY ts DESC LIMIT 100", (state,))
+    rows = cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    conn.close()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+# ── POST /proposals/{id}/confirm ──────────────────────────────────────────────
+@app.post("/proposals/{proposal_id}/confirm")
+def confirm_proposal(
+    proposal_id: str,
+    x_otp: str = Header(default="", alias="X-OTP"),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Bevestig een voorstel met Telegram OTP."""
+    auth(x_api_key)
+
+    # Validate OTP
+    expected_otp = _confirm_tokens.get(proposal_id)
+    if not expected_otp:
+        raise HTTPException(status_code=404, detail=f"Voorstel {proposal_id} niet gevonden of al bevestigd")
+    if x_otp != expected_otp:
+        raise HTTPException(status_code=403, detail="Ongeldig OTP")
+
+    # Check daily limit
+    _check_applies_limit()
+
+    # Load proposal
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_proposals_v2(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT type, payload_json, reason, status FROM proposals_v2 WHERE id=?", (proposal_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Voorstel niet gevonden")
+    ptype, payload_json, reason, status = row
+    if status != "pending":
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Voorstel status is '{status}', niet 'pending'")
+
+    payload = json.loads(payload_json)
+
+    # Policy check for PARAM_CHANGE
+    if ptype == "PARAM_CHANGE":
+        violations = _validate_param_bounds(payload)
+        if violations:
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"PARAM_BOUNDS overtreding: {violations}")
+
+    # ALLOW_LIVE mag NOOIT via proposal
+    if payload.get("ALLOW_LIVE") or payload.get("allow_live"):
+        conn.close()
+        raise HTTPException(status_code=403, detail="ALLOW_LIVE mag NOOIT via proposal worden ingeschakeld")
+
+    # Apply
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE proposals_v2 SET status='confirmed', confirmed_at=?, applied_at=? WHERE id=?",
+                 (ts, ts, proposal_id))
+    conn.commit()
+    conn.close()
+
+    _applies_today["count"] += 1
+    del _confirm_tokens[proposal_id]
+
+    _execute_proposal(proposal_id, ptype, payload, reason)
+
+    return {
+        "ok": True,
+        "proposal_id": proposal_id,
+        "status": "confirmed",
+        "applied": True,
+        "applies_today": _applies_today["count"],
+    }
+
+
+def _execute_proposal(proposal_id: str, ptype: str, payload: dict, reason: str):
+    """Voer een goedgekeurd voorstel uit."""
+    if ptype == "PAUSE":
+        minutes = payload.get("minutes", 30)
+        until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        _trading_halt["halted"] = False
+        _trading_halt["paused_until"] = until.isoformat()
+        _trading_halt["reason"] = reason or f"proposal {proposal_id}"
+        _write_halt_file()
+    elif ptype == "RESUME":
+        _trading_halt["halted"] = False
+        _trading_halt["paused_until"] = None
+        _trading_halt["reason"] = ""
+        _write_halt_file()
+    elif ptype == "PARAM_CHANGE":
+        # Write params to state file for apex_engine to pick up
+        try:
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            state.setdefault("config_overrides", {}).update(payload)
+            with open(STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False)
+        except Exception:
+            pass
+    # COIN_ALLOW, RUN_BACKTEST, DEPLOY_STAGING: logged but no direct execution
+
+
+# ── POST /context/macro ───────────────────────────────────────────────────────
+class MacroContextUpdate(BaseModel):
+    analysis: dict = {}
+    key_factors: list = []
+    suggested_actions: list = []
+    timestamp: str = ""
+
+
+@app.post("/context/macro")
+def update_macro_context(body: MacroContextUpdate, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Update macro-economische context (read-only store van Market Oracle)."""
+    auth(x_api_key)
+    _macro_context.update(body.dict())
+    _macro_context["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return {"ok": True, "message": "Macro context bijgewerkt"}
+
+
+@app.get("/context/macro")
+def get_macro_context(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Haal huidige macro context op."""
+    auth(x_api_key)
+    return _macro_context
+
+
+# ── GET /policy ───────────────────────────────────────────────────────────────
+@app.get("/policy")
+def get_policy(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Toon Gatekeeper policy regels."""
+    auth(x_api_key)
+    return {
+        "param_bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in PARAM_BOUNDS.items()},
+        "max_applies_per_day": MAX_APPLIES_PER_DAY,
+        "flashcrash_auto_actions": list(FLASHCRASH_AUTO_ACTIONS),
+        "allowed_proposal_types": list(PROPOSAL_TYPES),
+        "allow_live": False,
+        "confirm_required": True,
+    }
