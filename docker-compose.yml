@@ -71,7 +71,7 @@ services:
     env_file:
       - ./secrets/openclaw_gateway.env
     volumes:
-      - ./openclaw_config:/root/.openclaw:ro
+      - ./openclaw_config:/root/.openclaw
       - ./skills:/workspace/skills:ro
       - ./openclaw_tools/scripts:/workspace/tools:ro
       - apex_data:/var/apex

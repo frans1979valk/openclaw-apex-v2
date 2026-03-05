@@ -1,128 +1,140 @@
 {
-  "$schema": "https://openclaw.bot/schema/config/v1",
-
-  "gateway": {
-    "port": 18789,
-    "bind": "custom",
-    "customBindAddress": "0.0.0.0",
-    "auth": {
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
-    },
-    "tls": {
-      "enabled": false
-    },
-    "controlUi": {
-      "allowedOrigins": ["http://127.0.0.1:3000"]
-    }
+  "meta": {
+    "lastTouchedVersion": "2026.3.3",
+    "lastTouchedAt": "2026-03-05T19:45:25.186Z"
   },
-
-  "providers": {
-    "anthropic": {
-      "apiKey": "${ANTHROPIC_API_KEY}"
-    }
+  "env": {
+    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
   },
-
-  "channels": {
-    "telegram": {
-      "accounts": [
-        {
-          "name": "openclaw-operator",
-          "botToken": "${TELEGRAM_BOT_TOKEN}",
-          "dmPolicy": "allowlist",
-          "allowedIds": ["${TG_ALLOWED_USER_ID}"],
-          "replyToMode": "first",
-          "streaming": {
-            "mode": "block"
-          },
-          "commands": {
-            "enabled": true
-          }
-        }
-      ]
-    }
-  },
-
   "agents": {
     "defaults": {
-      "model": {
-        "provider": "anthropic",
-        "id": "claude-sonnet-4-6"
+      "model": "anthropic/claude-sonnet-4-6",
+      "models": {
+        "anthropic/claude-sonnet-4-6": {
+          "alias": "sonnet",
+          "params": {
+            "cacheRetention": "short"
+          }
+        }
+      },
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "1h"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "heartbeat": {
+        "every": "30m"
       }
     },
     "list": [
       {
         "id": "operator_risk_agent",
-        "name": "Operator Risk",
         "default": true,
-        "skills": ["gatekeeper"],
-        "model": {
-          "provider": "anthropic",
-          "id": "claude-sonnet-4-6"
-        },
+        "name": "Operator Risk",
+        "model": "anthropic/claude-sonnet-4-6",
+        "skills": [
+          "gatekeeper"
+        ],
         "identity": {
           "name": "OpenClaw Risk",
-          "description": "Bewaakt de Apex trading engine. Voert uitsluitend control_api calls uit. Geen exchange keys, geen directe trades."
+          "emoji": "🛡️"
         }
       },
       {
         "id": "research_agent",
         "name": "Research",
-        "skills": ["browser", "gatekeeper"],
-        "model": {
-          "provider": "anthropic",
-          "id": "claude-sonnet-4-6"
-        },
+        "model": "anthropic/claude-sonnet-4-6",
+        "skills": [
+          "browser",
+          "gatekeeper"
+        ],
         "identity": {
           "name": "OpenClaw Research",
-          "description": "Marktanalyse en nieuws research. Leest alleen, schrijft geen trades."
+          "emoji": "🔍"
         }
       },
       {
         "id": "builder_agent",
         "name": "Builder",
-        "skills": ["github", "gatekeeper"],
-        "model": {
-          "provider": "anthropic",
-          "id": "claude-sonnet-4-6"
-        },
+        "model": "anthropic/claude-sonnet-4-6",
+        "skills": [
+          "github",
+          "gatekeeper"
+        ],
         "identity": {
           "name": "OpenClaw Builder",
-          "description": "Code generatie, git, docker builds. Mag proposals indienen maar nooit deployen zonder expliciete goedkeuring."
-        }
-      }
-    ],
-    "bindings": [
-      {
-        "type": "route",
-        "agentId": "operator_risk_agent",
-        "match": {
-          "channel": "telegram"
+          "emoji": "🔧"
         }
       }
     ]
   },
-
-  "skills": {
-    "load": {
-      "extraDirs": ["/workspace/skills"],
-      "watch": false
-    },
-    "allowBundled": ["browser", "github"],
-    "entries": {
-      "browser": {
-        "enabled": true
-      },
-      "github": {
-        "enabled": true
-      },
-      "gatekeeper": {
-        "enabled": true,
-        "config": {
-          "controlApiUrl": "${CONTROL_API_URL}",
-          "controlApiToken": "${CONTROL_API_TOKEN}",
-          "toolsDir": "/workspace/tools"
+  "bindings": [
+    {
+      "type": "route",
+      "agentId": "operator_risk_agent",
+      "match": {
+        "channel": "telegram"
+      }
+    }
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "streaming": "partial",
+      "accounts": {
+        "default": {
+          "name": "openclaw-operator",
+          "dmPolicy": "allowlist",
+          "botToken": "${TELEGRAM_BOT_TOKEN}",
+          "replyToMode": "first",
+          "allowFrom": [
+            7381250590
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": "partial"
         }
       }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "custom",
+    "customBindHost": "0.0.0.0",
+    "controlUi": {
+      "allowedOrigins": [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789",
+        "http://0.0.0.0:18789"
+      ]
+    },
+    "auth": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "tls": {
+      "enabled": false
+    }
+  },
+  "skills": {
+    "allowBundled": [
+      "browser",
+      "github"
+    ],
+    "load": {
+      "extraDirs": [
+        "/workspace/skills"
+      ],
+      "watch": false
     }
   }
 }
