@@ -48,12 +48,11 @@ def _get_binance_price(symbol: str) -> Optional[float]:
 
 
 def _get_bybit_price(symbol: str) -> Optional[float]:
-    """BTC-USDT format."""
+    """Bybit v5 API uses BTCUSDT format (no dash)."""
     try:
-        bybit_sym = symbol.replace("USDT", "") + "-USDT"
         r = requests.get(
             "https://api.bybit.com/v5/market/tickers",
-            params={"category": "spot", "symbol": bybit_sym},
+            params={"category": "spot", "symbol": symbol},
             timeout=FETCH_TIMEOUT,
         )
         items = r.json().get("result", {}).get("list", [])

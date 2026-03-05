@@ -137,7 +137,7 @@ def main():
             # STAP 17: Exchange Intel (gewogen consensus)
             ex_consensus = 0.0
             ex_coinbase_lead = False
-            if EXCHANGE_INTEL_ENABLED and "BTC" in sym:
+            if EXCHANGE_INTEL_ENABLED:
                 try:
                     ex = exchange_intel.get_consensus(sym)
                     ex_consensus     = ex.get("consensus", 0.0)
@@ -281,7 +281,7 @@ def main():
             data_logger.maybe_log_crash_score(
                 symbol=sym, score=crash_score,
             )
-            if EXCHANGE_INTEL_ENABLED and "BTC" in sym and ex_consensus:
+            if EXCHANGE_INTEL_ENABLED and ex_consensus:
                 data_logger.maybe_log_exchange_consensus(
                     symbol=sym, consensus=ex_consensus,
                     prices={},  # exchange_intel cache niet direct toegankelijk
