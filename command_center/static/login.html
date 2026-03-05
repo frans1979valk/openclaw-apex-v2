@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Command Center — Login</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.login-box{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px;width:100%;max-width:400px}
+h1{font-size:1.4em;margin-bottom:8px;color:#58a6ff}
+.sub{color:#8b949e;font-size:0.85em;margin-bottom:24px}
+label{display:block;font-size:0.85em;color:#8b949e;margin-bottom:6px;margin-top:16px}
+input{width:100%;padding:10px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:1em;outline:none}
+input:focus{border-color:#58a6ff}
+button{width:100%;padding:12px;margin-top:20px;background:#238636;border:none;border-radius:6px;color:#fff;font-size:1em;cursor:pointer;font-weight:600}
+button:hover{background:#2ea043}
+button:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
+.error{color:#f85149;font-size:0.85em;margin-top:12px;display:none}
+.step2{display:none}
+.info{color:#8b949e;font-size:0.8em;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="login-box">
+  <h1>Command Center</h1>
+  <p class="sub">Jojo1 Operator Interface</p>
+
+  <div id="step1">
+    <label for="email">Email</label>
+    <input type="email" id="email" placeholder="je@email.nl" autocomplete="email">
+    <button id="btnSend" onclick="sendOTP()">Code versturen via Telegram</button>
+    <div class="info">Je ontvangt een 6-cijferige code via Telegram.</div>
+  </div>
+
+  <div id="step2" class="step2">
+    <label for="code">Verificatiecode</label>
+    <input type="text" id="code" placeholder="123456" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+    <button id="btnVerify" onclick="verify()">Inloggen</button>
+    <div class="info">Code is 10 minuten geldig.</div>
+  </div>
+
+  <div id="error" class="error"></div>
+</div>
+
+<script>
+const API = '';
+function showErr(msg) { const e = document.getElementById('error'); e.textContent = msg; e.style.display = 'block'; }
+function hideErr() { document.getElementById('error').style.display = 'none'; }
+
+async function sendOTP() {
+  hideErr();
+  const email = document.getElementById('email').value.trim();
+  if (!email) { showErr('Vul je email in'); return; }
+  const btn = document.getElementById('btnSend');
+  btn.disabled = true; btn.textContent = 'Versturen...';
+  try {
+    const r = await fetch(API + '/cc/auth/request', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email})
+    });
+    const d = await r.json();
+    if (!r.ok) { showErr(d.detail || 'Fout bij versturen'); btn.disabled = false; btn.textContent = 'Code versturen via Telegram'; return; }
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'block';
+    localStorage.setItem('cc_email', email);
+  } catch(e) { showErr('Netwerkfout'); }
+  btn.disabled = false; btn.textContent = 'Code versturen via Telegram';
+}
+
+async function verify() {
+  hideErr();
+  const email = localStorage.getItem('cc_email');
+  const code = document.getElementById('code').value.trim();
+  if (!code) { showErr('Vul de code in'); return; }
+  const btn = document.getElementById('btnVerify');
+  btn.disabled = true; btn.textContent = 'Verifying...';
+  try {
+    const r = await fetch(API + '/cc/auth/verify', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email, code})
+    });
+    const d = await r.json();
+    if (!r.ok) { showErr(d.detail || 'Verificatie mislukt'); btn.disabled = false; btn.textContent = 'Inloggen'; return; }
+    localStorage.setItem('cc_token', d.token);
+    localStorage.setItem('cc_expires', d.expires_at);
+    window.location.href = '/dashboard';
+  } catch(e) { showErr('Netwerkfout'); }
+  btn.disabled = false; btn.textContent = 'Inloggen';
+}
+
+// Auto-redirect als al ingelogd
+(function() {
+  const token = localStorage.getItem('cc_token');
+  const expires = localStorage.getItem('cc_expires');
+  if (token && expires && new Date(expires) > new Date()) {
+    window.location.href = '/dashboard';
+  }
+})();
+</script>
+</body>
+</html>

@@ -116,6 +116,28 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # ── Jojo1 Command Center ────────────────────────────────────────────────────
+  # Beveiligde webinterface voor AI operator + eigenaar.
+  # Eigen auth (Telegram OTP, 8h sessies), audit logging, proxy naar control_api.
+  command_center:
+    build: ./command_center
+    env_file:
+      - ./secrets/command_center.env
+    volumes:
+      - cc_data:/var/command_center
+    networks:
+      - agent_net
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:4000/cc/health | grep -q '\"status\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      - control_api
+
   tg_coordinator_bot:
     build:
       context: ./telegram
@@ -143,3 +165,4 @@ networks:
 volumes:
   apex_data:
   openclaw_workspace:
+  cc_data:
