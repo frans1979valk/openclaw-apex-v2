@@ -138,22 +138,22 @@ def calc_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period=14) ->
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
-    def smooth(vals, p):
-        s = [np.sum(vals[:p])]
+    def wilder_smooth(vals, p):
+        s = [np.mean(vals[:p])]
         for v in vals[p:]:
-            s.append(s[-1] - s[-1] / p + v)
+            s.append((s[-1] * (p - 1) + v) / p)
         return np.array(s)
 
-    atr_s = smooth(tr, period)
-    pdm_s = smooth(plus_dm, period)
-    mdm_s = smooth(minus_dm, period)
+    atr_s = wilder_smooth(tr, period)
+    pdm_s = wilder_smooth(plus_dm, period)
+    mdm_s = wilder_smooth(minus_dm, period)
 
     pdi = np.where(atr_s > 0, 100 * pdm_s / atr_s, 0)
     mdi = np.where(atr_s > 0, 100 * mdm_s / atr_s, 0)
     denom = pdi + mdi
     dx = np.where(denom > 0, 100 * np.abs(pdi - mdi) / denom, 0)
 
-    adx_s = smooth(dx, period)
+    adx_s = wilder_smooth(dx, period)
     result = np.full(n, np.nan)
     result[-len(adx_s):] = adx_s
     return result
