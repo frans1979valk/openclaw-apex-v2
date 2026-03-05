@@ -63,6 +63,29 @@
                     transition: all .15s; }
   .sig-filter-btn:hover { background: #2d333b; color: #c9d1d9; }
   .sig-filter-btn.active { background: #1f4068; color: #58a6ff; border-color: #1158a7; font-weight: 600; }
+
+  /* ── Live ticker balk ── */
+  #live-ticker {
+    display: flex; gap: 0; overflow-x: auto; padding: 0 24px;
+    background: #0d1117; border-bottom: 1px solid #21262d;
+    scrollbar-width: none;
+  }
+  #live-ticker::-webkit-scrollbar { display: none; }
+  .tick-item {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 18px; min-width: 110px; border-right: 1px solid #21262d;
+    transition: background .3s;
+  }
+  .tick-item:last-child { border-right: none; }
+  .tick-sym  { font-size: .7rem; color: #8b949e; font-weight: 600; letter-spacing: .04em; }
+  .tick-price{ font-size: 1rem; font-weight: 700; color: #e6edf3; font-variant-numeric: tabular-nums; }
+  .tick-chg  { font-size: .72rem; font-weight: 600; }
+  .tick-flash-up   { background: #0d2b1a !important; }
+  .tick-flash-down { background: #2b0d0d !important; }
+
+  /* ── Pre-crash score balk ── */
+  .crash-bar { height: 3px; border-radius: 2px; margin-top: 4px; transition: width .5s; }
+  .crash-score-label { font-size: .65rem; color: #8b949e; }
 </style>
 </head>
 <body>
@@ -74,6 +97,18 @@
   <button id="logout-btn" onclick="logout()">Uitloggen</button>
 </header>
 
+<div id="live-ticker">
+  <div class="tick-item" id="tick-BTCUSDT"><div class="tick-sym">BTC</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div></div>
+  <div class="tick-item" id="tick-ETHUSDT"><div class="tick-sym">ETH</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div></div>
+  <div class="tick-item" id="tick-SOLUSDT"><div class="tick-sym">SOL</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div></div>
+  <div class="tick-item" id="tick-BNBUSDT"><div class="tick-sym">BNB</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div></div>
+  <div class="tick-item" id="tick-XRPUSDT"><div class="tick-sym">XRP</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div></div>
+  <div class="tick-item" id="tick-BNBUSDT2" style="display:none"></div>
+  <div class="tick-item" style="min-width:auto;padding:8px 14px;flex-direction:row;align-items:center;gap:8px;margin-left:auto;border-right:none">
+    <div id="cascade-badge" style="display:none;background:#4a1f1f;color:#f85149;border-radius:4px;font-size:.68rem;font-weight:700;padding:3px 8px">⚡ BTC CASCADE</div>
+    <div style="font-size:.68rem;color:#8b949e" id="ticker-ts">Binance live</div>
+  </div>
+</div>
 <div id="app"><div class="spinner"></div></div>
 
 <script>
@@ -112,24 +147,51 @@ function badge(signal) {
 function chgClass(v) { return v >= 0 ? "chg-pos" : "chg-neg"; }
 function fmt(v, d=4) { return v == null ? "—" : (+v).toFixed(d); }
 
+function crashColor(score) {
+  if (score == null) return "#8b949e";
+  if (score >= 80) return "#f85149";
+  if (score >= 60) return "#f0883e";
+  if (score >= 40) return "#d29922";
+  return "#3fb950";
+}
+
 function renderCoins(coins) {
   if (!coins || !coins.length) return "<p style='color:#8b949e;font-size:.85rem'>Geen coins geladen...</p>";
-  return coins.map(c => `
-    <div class="coin-row">
-      <div>
-        <span class="coin-sym">${c.symbol}</span>
-        ${badge(c.signal)}
-        <div style="font-size:.75rem;color:#8b949e;margin-top:2px">
-          RSI: ${fmt(c.rsi,1)} &nbsp;|&nbsp; ATR: ${fmt(c.atr,4)}
+  return coins.map(c => {
+    const crash = c.pre_crash_score ?? null;
+    const crashBar = crash != null ? `
+      <div style="margin-top:4px;display:flex;align-items:center;gap:5px">
+        <div style="flex:1;background:#21262d;border-radius:2px;height:3px;overflow:hidden">
+          <div style="width:${Math.min(100,crash)}%;height:3px;background:${crashColor(crash)};transition:width .5s"></div>
         </div>
-        ${c.kimi_reden ? `<div style="font-size:.72rem;color:#58a6ff;margin-top:2px">💡 ${c.kimi_reden}</div>` : ""}
+        <span class="crash-score-label" style="color:${crashColor(crash)}">crash ${crash.toFixed(0)}</span>
+      </div>` : "";
+    const cbLead = c.coinbase_lead ? `<span style="font-size:.65rem;background:#1f2d4a;color:#58a6ff;border-radius:3px;padding:1px 5px;margin-left:4px">CB⬆</span>` : "";
+    const cascade = c.cascade_active ? `<span style="font-size:.65rem;background:#4a1f1f;color:#f85149;border-radius:3px;padding:1px 5px;margin-left:4px">CASCADE</span>` : "";
+    const priceDecimals = (c.price || 0) >= 100 ? 2 : (c.price || 0) >= 1 ? 4 : 6;
+    const consensusLine = c.price_consensus && Math.abs(c.price_consensus - c.price) > 0.001
+      ? `<div style="font-size:.68rem;color:#8b949e">Consensus: $${fmt(c.price_consensus, priceDecimals)}</div>` : "";
+    return `
+    <div class="coin-row">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:2px">
+          <span class="coin-sym">${c.symbol.replace("USDT","")}</span>
+          ${badge(c.signal)}${cbLead}${cascade}
+        </div>
+        <div style="font-size:.75rem;color:#8b949e;margin-top:2px">
+          RSI: ${fmt(c.rsi,1)} &nbsp;|&nbsp; TF: ${c.tf_bias||"—"} &nbsp;|&nbsp; ATR: ${fmt(c.atr,4)}
+        </div>
+        ${c.kimi_reden ? `<div style="font-size:.72rem;color:#58a6ff;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px">💡 ${c.kimi_reden}</div>` : ""}
+        ${crashBar}
       </div>
-      <div style="text-align:right">
-        <div class="coin-price">$${fmt(c.price,4)}</div>
-        <div class="${chgClass(c.change_pct)}">${c.change_pct>=0?"+":""}${fmt(c.change_pct,2)}%</div>
-        <div style="font-size:.72rem;color:#8b949e">Vol: ${(c.volume_usdt/1e6).toFixed(0)}M</div>
+      <div style="text-align:right;flex-shrink:0;margin-left:12px">
+        <div class="coin-price" style="font-size:1rem;font-weight:700">$${(+(c.price||0)).toLocaleString("en-US",{minimumFractionDigits:priceDecimals,maximumFractionDigits:priceDecimals})}</div>
+        <div class="${chgClass(c.change_pct)}">${(c.change_pct||0)>=0?"+":""}${fmt(c.change_pct,2)}%</div>
+        ${consensusLine}
+        <div style="font-size:.72rem;color:#8b949e">Vol: ${((c.volume_usdt||0)/1e6).toFixed(0)}M</div>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function renderFlash(triggers) {
@@ -220,46 +282,73 @@ function renderPerformance(rows) {
 
 function renderBalance(b) {
   if (!b) return "<p style='color:#8b949e;font-size:.82rem'>Balans niet beschikbaar.</p>";
-  const winColor = b.win_rate_pct >= 50 ? "#3fb950" : "#f85149";
-  const pnlColor = b.avg_pnl_1h_pct >= 0 ? "#3fb950" : "#f85149";
+  const bal      = b.balance || 1000;
+  const start    = b.demo_start_usdt || 1000;
+  const pnl      = b.pnl_total_usdt ?? (bal - start);
+  const pnlPct   = b.pnl_total_pct   ?? ((bal - start) / start * 100);
+  const peak     = b.peak_balance || bal;
+  const pnlClr   = pnl >= 0 ? "#3fb950" : "#f85149";
+  const winClr   = (b.win_rate_pct||0) >= 50 ? "#3fb950" : "#f85149";
+  const balPct   = Math.min(100, (bal / Math.max(peak, start)) * 100);
+
   return `
-  <div class='stat-grid' style='margin-bottom:12px'>
-    <div class='stat-box'>
-      <div class='stat-val' style='color:#58a6ff'>$${(b.demo_start_usdt||1000).toLocaleString()}</div>
-      <div class='stat-lbl'>Demo startkapitaal (USDT)</div>
+  <!-- Grote balans weergave -->
+  <div style='display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:16px;
+              padding:16px;background:#0d1117;border-radius:10px;border:1px solid #30363d'>
+    <div>
+      <div style='font-size:.72rem;color:#8b949e;margin-bottom:4px'>💰 Huidige balans (Demo USDT)</div>
+      <div style='font-size:2rem;font-weight:800;color:#e6edf3;line-height:1'>
+        $${bal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
+      </div>
+      <div style='font-size:.8rem;margin-top:4px;color:${pnlClr};font-weight:600'>
+        ${pnl>=0?"+":""}$${pnl.toFixed(2)} (${pnlPct>=0?"+":""}${pnlPct.toFixed(2)}%) t.o.v. $${start.toLocaleString()}
+      </div>
+      <div style='margin-top:8px;background:#21262d;border-radius:4px;height:6px;width:200px'>
+        <div style='width:${balPct}%;height:6px;border-radius:4px;background:${pnlClr};transition:width .6s'></div>
+      </div>
     </div>
-    <div class='stat-box'>
-      <div class='stat-val' style='color:#c9d1d9'>${b.total_orders}</div>
-      <div class='stat-lbl'>Orders geplaatst</div>
-    </div>
-    <div class='stat-box'>
-      <div class='stat-val' style='color:#8b949e'>$${(b.total_volume_usdt||0).toLocaleString()}</div>
-      <div class='stat-lbl'>Verhandeld volume</div>
+    <div style='margin-left:auto;display:flex;gap:16px;flex-wrap:wrap'>
+      <div style='text-align:center'>
+        <div style='font-size:1.4rem;font-weight:700;color:${winClr}'>${b.win_rate_pct??0}%</div>
+        <div style='font-size:.68rem;color:#8b949e'>Win-rate</div>
+      </div>
+      <div style='text-align:center'>
+        <div style='font-size:1.4rem;font-weight:700;color:#c9d1d9'>${b.total_orders??0}</div>
+        <div style='font-size:.68rem;color:#8b949e'>Orders</div>
+      </div>
+      <div style='text-align:center'>
+        <div style='font-size:1.4rem;font-weight:700;color:#58a6ff'>$${peak.toFixed(0)}</div>
+        <div style='font-size:.68rem;color:#8b949e'>Piek balans</div>
+      </div>
     </div>
   </div>
-  <div style='display:flex;gap:16px;flex-wrap:wrap'>
-    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
-      <div style='font-size:1.1rem;font-weight:700;color:${winColor}'>${b.win_rate_pct}%</div>
-      <div style='font-size:.7rem;color:#8b949e'>Win-rate signalen</div>
+  <div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px'>
+    <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
+      <div style='font-size:1rem;font-weight:700;color:${(b.avg_pnl_1h_pct||0)>=0?"#3fb950":"#f85149"}'>${(b.avg_pnl_1h_pct||0)>=0?"+":""}${(b.avg_pnl_1h_pct||0).toFixed(3)}%</div>
+      <div style='font-size:.68rem;color:#8b949e'>Gem. P&L na 1u</div>
     </div>
-    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
-      <div style='font-size:1.1rem;font-weight:700;color:${pnlColor}'>${b.avg_pnl_1h_pct >= 0 ? "+" : ""}${b.avg_pnl_1h_pct}%</div>
-      <div style='font-size:.7rem;color:#8b949e'>Gem. P&L na 1u</div>
+    <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
+      <div style='font-size:1rem;font-weight:700;color:#c9d1d9'>${b.signals_evaluated??0}</div>
+      <div style='font-size:.68rem;color:#8b949e'>Signalen geëvalueerd</div>
     </div>
-    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
-      <div style='font-size:1.1rem;font-weight:700;color:#c9d1d9'>${b.signals_evaluated}</div>
-      <div style='font-size:.7rem;color:#8b949e'>Geëvalueerde signalen</div>
+    <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
+      <div style='font-size:1rem;font-weight:700;color:#8b949e'>$${((b.total_volume_usdt||0)).toLocaleString("en-US",{maximumFractionDigits:0})}</div>
+      <div style='font-size:.68rem;color:#8b949e'>Volume verhandeld</div>
     </div>
   </div>
   ${b.recent_orders && b.recent_orders.length ? `
-  <div style='margin-top:12px'>
+  <div>
     <div style='font-size:.75rem;color:#8b949e;margin-bottom:6px'>Recente orders:</div>
-    ${b.recent_orders.slice(0,5).map(o =>
-      `<div style='font-size:.75rem;padding:4px 0;border-bottom:1px solid #21262d;display:flex;justify-content:space-between'>
-        <span><span style='font-weight:600'>${o.symbol}</span> ${o.side.toUpperCase()} ×${o.size}</span>
+    ${b.recent_orders.slice(0,6).map(o => {
+      const pnlO = o.pnl_usdt ?? null;
+      const pnlC = pnlO == null ? "#8b949e" : pnlO >= 0 ? "#3fb950" : "#f85149";
+      return `<div style='font-size:.75rem;padding:5px 0;border-bottom:1px solid #21262d;display:flex;justify-content:space-between;align-items:center'>
+        <span><span style='font-weight:600'>${o.symbol}</span> <span style='color:#8b949e'>${(o.side||"").toUpperCase()}</span></span>
         <span style='color:#58a6ff'>$${(+o.price).toFixed(4)}</span>
-        <span style='color:#8b949e'>${(o.ts||"").slice(0,16).replace("T"," ")}</span>
-      </div>`).join("")}
+        ${pnlO != null ? `<span style='color:${pnlC};font-weight:600'>${pnlO>=0?"+":""}$${pnlO.toFixed(2)}</span>` : ""}
+        <span style='color:#8b949e'>${(o.ts||"").slice(11,16)}</span>
+      </div>`;
+    }).join("")}
   </div>` : ""}`;
 }
 
@@ -432,6 +521,76 @@ function logout() {
   window.location.href = "login.html";
 }
 
+// ── Live Prijs Ticker (rechtstreeks Binance, elke 3 sec) ──────────────────
+const TICKER_SYMS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
+const _prevPrices = {};
+
+async function updateLiveTicker() {
+  try {
+    const symsJson = encodeURIComponent(JSON.stringify(TICKER_SYMS));
+    const r = await fetch(
+      `https://api.binance.com/api/v3/ticker/24hr?symbols=${symsJson}`,
+      { cache: "no-store" }
+    );
+    if (!r.ok) return;
+    const data = await r.json();
+    const now = new Date().toLocaleTimeString("nl-NL");
+    document.getElementById("ticker-ts").textContent = `Binance · ${now}`;
+
+    for (const t of data) {
+      const sym   = t.symbol;
+      const price = parseFloat(t.lastPrice);
+      const chg   = parseFloat(t.priceChangePercent);
+      const el    = document.getElementById(`tick-${sym}`);
+      if (!el) continue;
+
+      const priceEl = el.children[1];
+      const chgEl   = el.children[2];
+
+      // Flash animatie bij verandering
+      const prev = _prevPrices[sym];
+      if (prev !== undefined && price !== prev) {
+        const cls = price > prev ? "tick-flash-up" : "tick-flash-down";
+        el.classList.add(cls);
+        setTimeout(() => el.classList.remove(cls), 600);
+      }
+      _prevPrices[sym] = price;
+
+      // Prijs formatteren
+      const decimals = price >= 1000 ? 2 : price >= 1 ? 4 : 6;
+      priceEl.textContent = `$${price.toLocaleString("en-US", {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}`;
+      chgEl.style.color = chg >= 0 ? "#3fb950" : "#f85149";
+      chgEl.textContent = `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`;
+    }
+  } catch(e) {
+    // Binance tijdelijk onbereikbaar — stil falen
+  }
+}
+
+function startLiveTicker() {
+  updateLiveTicker();
+  setInterval(updateLiveTicker, 3000);
+}
+
+// Voeg extra gevolgde coins toe aan de ticker als ze niet al erin zitten
+function extendTicker(coins) {
+  const ticker = document.getElementById("live-ticker");
+  const badgeEl = document.getElementById("cascade-badge");
+  if (!ticker) return;
+  for (const coin of (coins || [])) {
+    const sym = coin.symbol;
+    if (TICKER_SYMS.includes(sym)) continue;  // al aanwezig
+    if (document.getElementById(`tick-${sym}`)) continue;
+    const base = sym.replace("USDT","");
+    const div = document.createElement("div");
+    div.className = "tick-item";
+    div.id = `tick-${sym}`;
+    div.innerHTML = `<div class="tick-sym">${base}</div><div class="tick-price">—</div><div class="tick-chg" style="color:#8b949e">—</div>`;
+    ticker.insertBefore(div, ticker.lastElementChild);
+    if (!TICKER_SYMS.includes(sym)) TICKER_SYMS.push(sym);
+  }
+}
+
 // ── SSE + render ──────────────────────────────────────────────────────────
 let _sseSource   = null;
 let _sseRetry    = null;
@@ -452,12 +611,29 @@ async function renderFromState(state) {
     document.getElementById("last-update").textContent = `⚡ Live: ${now}`;
     document.getElementById("status-dot").style.background = "#3fb950";
 
+    // Cascade badge
+    const cascadeEl = document.getElementById("cascade-badge");
+    if (cascadeEl) cascadeEl.style.display = state.cascade_active ? "block" : "none";
+
     // Sla backtest inhoud op voor herstel
     const existingHist = document.getElementById("hist-result");
     if (existingHist) _histContent = existingHist.innerHTML;
 
-    document.getElementById("app").innerHTML = `
+    // Pre-crash scores samenvatting
+    const crashScores = state.pre_crash_scores || {};
+    const maxCrash = Math.max(0, ...Object.values(crashScores));
+    const crashBanner = maxCrash >= 60
+      ? `<div style="padding:8px 24px;background:#2b0d0d;border-bottom:1px solid #f85149;color:#f85149;font-size:.8rem;font-weight:600">
+          ⚠️ IJZEREN WET ACTIEF — Pre-crash score ${maxCrash.toFixed(0)}/100. Kooporders geblokkeerd.
+         </div>`
+      : "";
+
+    document.getElementById("app").innerHTML = crashBanner + `
       <div class="grid">
+        <div class="card" style="grid-column: span 2">
+          <h2>💰 Demo Account — BloFin Paper Trading</h2>
+          ${safeRender(() => renderBalance(balData))}
+        </div>
         <div class="card" style="grid-column: span 2">
           <h2>📊 Coin Overzicht — ${ts} UTC</h2>
           ${safeRender(() => renderCoins(state.coins))}
@@ -470,6 +646,7 @@ async function renderFromState(state) {
           <div class="metric"><span>Kimi scan</span><span class="metric-val">${kimi_ts}</span></div>
           <div class="metric"><span>Agent run</span><span class="metric-val">${agent_ts}</span></div>
           <div class="metric"><span>Flash crashes (1u)</span><span class="metric-val" style="color:#f0883e">${flashCount}</span></div>
+          ${maxCrash>0 ? `<div class="metric"><span>Max crash score</span><span class="metric-val" style="color:${maxCrash>=60?"#f85149":maxCrash>=40?"#d29922":"#3fb950"}">${maxCrash.toFixed(0)}/100</span></div>` : ""}
         </div>
         <div class="card">
           <h2>⚡ Flash Crash Detector</h2>
@@ -478,10 +655,6 @@ async function renderFromState(state) {
         <div class="card" style="grid-column: span 2">
           <h2>🤖 AI Agent Workflow (Research → Strategy → Risk → Verify)</h2>
           ${safeRender(() => renderAgent(state.last_agent))}
-        </div>
-        <div class="card" style="grid-column: span 2">
-          <h2>💰 Demo Account — BloFin Paper Trading ($1.000 startkapitaal)</h2>
-          ${safeRender(() => renderBalance(balData))}
         </div>
         <div class="card" style="grid-column: span 2">
           <h2>📈 Signaal Performance — Wat hadden eerdere signalen opgeleverd?</h2>
@@ -563,6 +736,7 @@ async function renderFromState(state) {
       </div>`;
 
     buildHistButtons(state.coins || []);
+    extendTicker(state.coins || []);
   } catch(e) {
     document.getElementById("status-dot").style.background = "#f85149";
     document.getElementById("app").innerHTML =
@@ -597,6 +771,9 @@ function connectSSE() {
   _sseSource = src;
   console.log("[SSE] Verbonden met", url);
 }
+
+// Start live ticker meteen
+startLiveTicker();
 
 // Start: initiële render via REST, dan overschakelen op SSE
 (async () => {
