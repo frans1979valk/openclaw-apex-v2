@@ -248,6 +248,10 @@ def main():
 
             # Signal performance logging — max 1x per 15 min per (coin+signaal)
             sig_key = (sym, signal)
+            _overrides = _get_config_overrides()
+            _rsi_limit = _overrides.get("rsi_buy_threshold", RSI_BUY_THRESHOLD)
+            _current_rsi = ind.get("rsi")
+            _rsi_ok = _current_rsi is not None and _current_rsi < _rsi_limit
             if signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY") and price \
                and (now - last_signal_log.get(sig_key, 0)) > SIGNAL_LOG_COOLDOWN:
                 log_signal_entry(db_path, symbol=sym, signal=signal,
@@ -255,17 +259,14 @@ def main():
                 log_market_context(db_path, symbol=sym, signal=signal, entry_price=price,
                                    rsi_5m=ind.get("rsi"), tf_confirm_score=mtf.get("confirm_score"),
                                    tf_bias=mtf.get("tf_bias"), tf_detail=mtf.get("tf_detail", {}))
-                demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
+                if _rsi_ok:
+                    demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
+                else:
+                    print(f"[apex] RSI filter: {sym} RSI={_current_rsi:.1f} >= {_rsi_limit} — demo koop geblokkeerd")
                 last_signal_log[sig_key] = now
 
             # Order logica — IJZEREN WET: geen koop als crash score te hoog of RSI te hoog
             order_signal = signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY")
-            _overrides = _get_config_overrides()
-            _rsi_limit = _overrides.get("rsi_buy_threshold", RSI_BUY_THRESHOLD)
-            _current_rsi = ind.get("rsi")
-            _rsi_ok = _current_rsi is not None and _current_rsi < _rsi_limit
-            if order_signal and not _rsi_ok and _current_rsi is not None:
-                print(f"[apex] RSI filter: {sym} RSI={_current_rsi:.1f} >= {_rsi_limit} — koop geblokkeerd")
             if order_signal and price and not flash_triggered and not ind.get("danger") \
                and safe_to_buy and _rsi_ok \
                and (now - last_order.get(sym, 0)) > ORDER_COOLDOWN \
