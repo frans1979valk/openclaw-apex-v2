@@ -135,6 +135,29 @@ Geeft recente marktevents: FLASH_CRASH, BTC_CASCADE, PUMP_DUMP etc.
 
 ---
 
+## TOOL: tool_analytics (jojo_analytics service)
+
+**Gebruik:**
+```bash
+# Technische indicatoren via Binance
+python3 /workspace/tools/tool_analytics.py indicators AAVEUSDT 1h
+
+# Database queries (alleen SELECT)
+python3 /workspace/tools/tool_analytics.py query "SELECT symbol, COUNT(*) FROM signal_performance GROUP BY symbol"
+
+# Market Oracle
+python3 /workspace/tools/tool_analytics.py oracle scan
+python3 /workspace/tools/tool_analytics.py oracle event "Fed verhoogt rente"
+```
+
+**Indicators output:** RSI, MACD, BB, ADX, StochRSI, EMA21/55/200, ema_bull, advies (BUY_CANDIDATE / OVERSOLD / SELL_CANDIDATE / OVERBOUGHT / TREND_BULL / HOLD).
+
+**Query regels:** alleen SELECT, max 200 rijen, database pad: `/var/apex/apex.db`.
+
+**Gebruik indicators** als je eigen analyse wilt doen naast de engine's signalen.
+
+---
+
 ## AGENT SWITCHING
 
 Via Telegram kun je wisselen van agent door de eigenaar te vragen:
