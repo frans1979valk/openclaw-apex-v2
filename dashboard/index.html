@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Apex + OpenClaw Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
+  header { background: #161b22; padding: 16px 24px; border-bottom: 1px solid #30363d;
+           display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 1.3rem; }
+  #status-dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; margin-left: auto; }
+  #last-update { font-size: 0.75rem; color: #8b949e; }
+  #logout-btn { font-size: 0.75rem; color: #8b949e; background: none; border: 1px solid #30363d;
+                border-radius: 6px; padding: 4px 10px; cursor: pointer; margin-left: 8px; }
+  #logout-btn:hover { color: #f85149; border-color: #f85149; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr));
+          gap: 16px; padding: 20px 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 18px; }
+  .card h2 { font-size: 0.85rem; color: #8b949e; text-transform: uppercase;
+             letter-spacing: .05em; margin-bottom: 12px; }
+  .coin-row { display: flex; justify-content: space-between; align-items: center;
+              padding: 8px 0; border-bottom: 1px solid #21262d; }
+  .coin-row:last-child { border: none; }
+  .coin-sym { font-weight: 600; font-size: 0.95rem; }
+  .coin-price { font-size: 0.9rem; color: #c9d1d9; }
+  .chg-pos { color: #3fb950; font-size: 0.8rem; }
+  .chg-neg { color: #f85149; font-size: 0.8rem; }
+  .badge { display: inline-block; font-size: 0.7rem; padding: 2px 8px;
+           border-radius: 20px; font-weight: 700; margin-left: 6px; }
+  .badge-buy  { background: #1a4731; color: #3fb950; }
+  .badge-sell { background: #4a1f1f; color: #f85149; }
+  .badge-hold { background: #21262d; color: #8b949e; }
+  .metric { display: flex; justify-content: space-between; padding: 6px 0;
+            border-bottom: 1px solid #21262d; font-size: 0.85rem; }
+  .metric:last-child { border: none; }
+  .metric-val { color: #c9d1d9; font-weight: 600; }
+  .flash-row { padding: 6px 0; font-size: 0.82rem; color: #f0883e; border-bottom: 1px solid #21262d; }
+  .flash-row:last-child { border: none; }
+  .agent-block { background: #0d1117; border-radius: 8px; padding: 12px;
+                 font-size: 0.8rem; color: #c9d1d9; margin-top: 8px; line-height: 1.5; }
+  .verdict-go  { color: #3fb950; font-weight: 700; }
+  .verdict-nogo{ color: #f85149; font-weight: 700; }
+  #error-msg { padding: 20px 24px; color: #f85149; }
+  .spinner { border: 3px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
+             width: 32px; height: 32px; animation: spin .8s linear infinite;
+             margin: 40px auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hist-btn { background: #1f4068; color: #58a6ff; border: 1px solid #1158a7;
+              border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 0.82rem;
+              font-weight: 600; transition: background .2s; }
+  .hist-btn:hover { background: #1a3557; }
+  .hist-btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+  .stat-box { background: #0d1117; border-radius: 8px; padding: 10px; text-align: center; }
+  .stat-val { font-size: 1.3rem; font-weight: 700; }
+  .stat-lbl { font-size: 0.7rem; color: #8b949e; margin-top: 2px; }
+  .sig-tag { display: inline-block; font-size: 0.7rem; padding: 2px 6px;
+             border-radius: 4px; margin-right: 3px; background: #21262d; color: #c9d1d9; }
+  .sig-filter-btn { background: #21262d; color: #8b949e; border: 1px solid #30363d;
+                    border-radius: 6px; padding: 5px 11px; cursor: pointer; font-size: 0.78rem;
+                    transition: all .15s; }
+  .sig-filter-btn:hover { background: #2d333b; color: #c9d1d9; }
+  .sig-filter-btn.active { background: #1f4068; color: #58a6ff; border-color: #1158a7; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <span>🤖</span>
+  <h1>OpenClaw Apex — Live Dashboard</h1>
+  <span id="status-dot" title="Verbonden"></span>
+  <span id="last-update">laden...</span>
+  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+</header>
+
+<div id="app"><div class="spinner"></div></div>
+
+<script>
+const API = `${location.protocol}//${location.hostname}:8080`;
+
+// Sessie check
+(function() {
+  const token = localStorage.getItem("oc_token");
+  const exp   = localStorage.getItem("oc_expires");
+  if (!token || !exp || new Date(exp) <= new Date()) {
+    localStorage.removeItem("oc_token");
+    window.location.href = "login.html";
+  }
+})();
+
+const TOKEN = localStorage.getItem("oc_token") || "changeme-strong-token";
+const H = {"X-API-KEY": TOKEN};
+
+async function fetchJSON(url) {
+  const r = await fetch(url, {headers: H});
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+function badge(signal) {
+  const map = {
+    BUY:"badge-buy", SELL:"badge-sell", HOLD:"badge-hold",
+    PERFECT_DAY:"badge-buy", BREAKOUT_BULL:"badge-buy", MOMENTUM:"badge-buy",
+    DANGER:"badge-sell"
+  };
+  const cls = map[signal] || "badge-hold";
+  const lbl = signal === "PERFECT_DAY" ? "⭐ PERFECT DAY" : (signal || "HOLD");
+  return `<span class="badge ${cls}">${lbl}</span>`;
+}
+
+function chgClass(v) { return v >= 0 ? "chg-pos" : "chg-neg"; }
+function fmt(v, d=4) { return v == null ? "—" : (+v).toFixed(d); }
+
+function renderCoins(coins) {
+  if (!coins || !coins.length) return "<p style='color:#8b949e;font-size:.85rem'>Geen coins geladen...</p>";
+  return coins.map(c => `
+    <div class="coin-row">
+      <div>
+        <span class="coin-sym">${c.symbol}</span>
+        ${badge(c.signal)}
+        <div style="font-size:.75rem;color:#8b949e;margin-top:2px">
+          RSI: ${fmt(c.rsi,1)} &nbsp;|&nbsp; ATR: ${fmt(c.atr,4)}
+        </div>
+        ${c.kimi_reden ? `<div style="font-size:.72rem;color:#58a6ff;margin-top:2px">💡 ${c.kimi_reden}</div>` : ""}
+      </div>
+      <div style="text-align:right">
+        <div class="coin-price">$${fmt(c.price,4)}</div>
+        <div class="${chgClass(c.change_pct)}">${c.change_pct>=0?"+":""}${fmt(c.change_pct,2)}%</div>
+        <div style="font-size:.72rem;color:#8b949e">Vol: ${(c.volume_usdt/1e6).toFixed(0)}M</div>
+      </div>
+    </div>`).join("");
+}
+
+function renderFlash(triggers) {
+  if (!triggers || !triggers.length) return "<p style='color:#8b949e;font-size:.82rem'>Geen flash crashes (1u)</p>";
+  return triggers.map(t =>
+    `<div class="flash-row">⚡ ${t.symbol} — daling ${t.drop_pct}% | prijs $${fmt(t.price,4)}</div>`
+  ).join("");
+}
+
+function renderAgent(agent) {
+  if (!agent || !agent.verdict) return "<p style='color:#8b949e;font-size:.82rem'>Nog niet gerund...</p>";
+  const v = agent.verdict;
+  const s = agent.strategy || {};
+  const r = agent.risk || {};
+  const beslissing = v.beslissing || "?";
+  const cls = beslissing === "GO" ? "verdict-go" : "verdict-nogo";
+  return `
+    <div class="agent-block">
+      <div>Beslissing: <span class="${cls}">${beslissing}</span>
+        ${v.vertrouwen_pct ? `<span style="color:#8b949e">(${v.vertrouwen_pct}% vertrouwen)</span>` : ""}
+      </div>
+      ${v.samenvatting ? `<div style="margin-top:6px">${v.samenvatting}</div>` : ""}
+      ${s.strategy ? `<div style="margin-top:6px;color:#58a6ff">Strategie: ${s.strategy}</div>` : ""}
+      ${r.reden ? `<div style="margin-top:4px;color:#8b949e">Risk: ${r.reden}</div>` : ""}
+    </div>`;
+}
+
+function pnlColor(v) {
+  if (v == null) return "#8b949e";
+  return v >= 0 ? "#3fb950" : "#f85149";
+}
+function pnlFmt(v) {
+  if (v == null) return "<span style='color:#8b949e'>wachten...</span>";
+  const sign = v >= 0 ? "+" : "";
+  return `<span style='color:${pnlColor(v)};font-weight:600'>${sign}${v.toFixed(2)}%</span>`;
+}
+
+function renderPerformance(rows) {
+  if (!rows || !rows.length) return "<p style='color:#8b949e;font-size:.82rem'>Nog geen signalen geëvalueerd. Komt vanzelf na 15 minuten...</p>";
+
+  // Statistieken
+  const closed = rows.filter(r => r.pnl_1h_pct != null);
+  const wins   = closed.filter(r => r.pnl_1h_pct > 0).length;
+  const winRate = closed.length ? Math.round(wins / closed.length * 100) : null;
+  const avgPnl  = closed.length ? (closed.reduce((s,r) => s + r.pnl_1h_pct, 0) / closed.length).toFixed(2) : null;
+
+  let html = "";
+  if (closed.length > 0) {
+    html += `<div style="display:flex;gap:16px;margin-bottom:12px;padding:10px;background:#0d1117;border-radius:8px">
+      <div style="text-align:center">
+        <div style="font-size:1.3rem;font-weight:700;color:${winRate>=50?'#3fb950':'#f85149'}">${winRate}%</div>
+        <div style="font-size:0.7rem;color:#8b949e">Win-rate (1u)</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.3rem;font-weight:700;color:${avgPnl>=0?'#3fb950':'#f85149'}">${avgPnl>=0?'+':''}${avgPnl}%</div>
+        <div style="font-size:0.7rem;color:#8b949e">Gem. P&L (1u)</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.3rem;font-weight:700;color:#c9d1d9">${closed.length}</div>
+        <div style="font-size:0.7rem;color:#8b949e">Geëvalueerd</div>
+      </div>
+    </div>`;
+  }
+
+  html += rows.slice(0, 15).map(r => {
+    const time = r.ts ? r.ts.slice(11,19) : "";
+    const date = r.ts ? r.ts.slice(0,10) : "";
+    const sigs = (r.active_signals || []).join(", ") || r.signal;
+    return `<div style="padding:7px 0;border-bottom:1px solid #21262d;font-size:0.78rem">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-weight:600">${r.symbol}</span>
+          <span style="color:#8b949e;margin-left:6px">${sigs}</span>
+          <span style="color:#58a6ff;font-size:.7rem;margin-left:6px">@ $${(+r.entry_price).toFixed(4)}</span>
+        </div>
+        <span style="color:#8b949e;font-size:.7rem">${date} ${time}</span>
+      </div>
+      <div style="display:flex;gap:12px;margin-top:3px">
+        <span style="color:#8b949e">15m: ${pnlFmt(r.pnl_15m_pct)}</span>
+        <span style="color:#8b949e">1u: ${pnlFmt(r.pnl_1h_pct)}</span>
+        <span style="color:#8b949e">4u: ${pnlFmt(r.pnl_4h_pct)}</span>
+        ${r.status === 'open' ? '<span style="color:#f0883e;font-size:.7rem">⏳ open</span>' : ''}
+      </div>
+    </div>`;
+  }).join("");
+  return html;
+}
+
+function renderBalance(b) {
+  if (!b) return "<p style='color:#8b949e;font-size:.82rem'>Balans niet beschikbaar.</p>";
+  const winColor = b.win_rate_pct >= 50 ? "#3fb950" : "#f85149";
+  const pnlColor = b.avg_pnl_1h_pct >= 0 ? "#3fb950" : "#f85149";
+  return `
+  <div class='stat-grid' style='margin-bottom:12px'>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:#58a6ff'>$${b.demo_start_usdt.toLocaleString()}</div>
+      <div class='stat-lbl'>Demo startkapitaal (USDT)</div>
+    </div>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:#c9d1d9'>${b.total_orders}</div>
+      <div class='stat-lbl'>Orders geplaatst</div>
+    </div>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:#8b949e'>$${(b.total_volume_usdt||0).toLocaleString()}</div>
+      <div class='stat-lbl'>Verhandeld volume</div>
+    </div>
+  </div>
+  <div style='display:flex;gap:16px;flex-wrap:wrap'>
+    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
+      <div style='font-size:1.1rem;font-weight:700;color:${winColor}'>${b.win_rate_pct}%</div>
+      <div style='font-size:.7rem;color:#8b949e'>Win-rate signalen</div>
+    </div>
+    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
+      <div style='font-size:1.1rem;font-weight:700;color:${pnlColor}'>${b.avg_pnl_1h_pct >= 0 ? "+" : ""}${b.avg_pnl_1h_pct}%</div>
+      <div style='font-size:.7rem;color:#8b949e'>Gem. P&L na 1u</div>
+    </div>
+    <div style='background:#0d1117;border-radius:8px;padding:10px 16px;text-align:center'>
+      <div style='font-size:1.1rem;font-weight:700;color:#c9d1d9'>${b.signals_evaluated}</div>
+      <div style='font-size:.7rem;color:#8b949e'>Geëvalueerde signalen</div>
+    </div>
+  </div>
+  ${b.recent_orders && b.recent_orders.length ? `
+  <div style='margin-top:12px'>
+    <div style='font-size:.75rem;color:#8b949e;margin-bottom:6px'>Recente orders:</div>
+    ${b.recent_orders.slice(0,5).map(o =>
+      `<div style='font-size:.75rem;padding:4px 0;border-bottom:1px solid #21262d;display:flex;justify-content:space-between'>
+        <span><span style='font-weight:600'>${o.symbol}</span> ${o.side.toUpperCase()} ×${o.size}</span>
+        <span style='color:#58a6ff'>$${(+o.price).toFixed(4)}</span>
+        <span style='color:#8b949e'>${(o.ts||"").slice(0,16).replace("T"," ")}</span>
+      </div>`).join("")}
+  </div>` : ""}`;
+}
+
+async function render() {
+  try {
+    const [state, perfData, balData] = await Promise.all([
+      fetchJSON(`${API}/state/latest`),
+      fetchJSON(`${API}/signal-performance?limit=50`).catch(() => []),
+      fetchJSON(`${API}/balance`).catch(() => null),
+    ]);
+    const now   = new Date().toLocaleTimeString("nl-NL");
+    document.getElementById("last-update").textContent = `Update: ${now}`;
+    document.getElementById("status-dot").style.background = "#3fb950";
+    buildHistButtons(state.coins || []);
+
+    const kimi_ts     = state.kimi_last_scan ? state.kimi_last_scan.slice(0,19).replace("T"," ") : "—";
+    const agent_ts    = state.agent_last_run  ? state.agent_last_run.slice(0,19).replace("T"," ")  : "—";
+    const ts          = state.ts ? state.ts.slice(0,19).replace("T"," ") : "—";
+    const flashCount  = (state.flash_triggers||[]).length;
+
+    document.getElementById("app").innerHTML = `
+      <div class="grid">
+        <!-- Coin overzicht -->
+        <div class="card" style="grid-column: span 2">
+          <h2>📊 Coin Overzicht — ${ts} UTC</h2>
+          ${renderCoins(state.coins)}
+        </div>
+
+        <!-- Systeem metrics -->
+        <div class="card">
+          <h2>⚙️ Systeem</h2>
+          <div class="metric"><span>Mode</span><span class="metric-val">${state.mode||"demo"}</span></div>
+          <div class="metric"><span>Exchange</span><span class="metric-val">${state.executor||"blofin_demo"}</span></div>
+          <div class="metric"><span>Coins gevolgd</span><span class="metric-val">${(state.coins||[]).length}</span></div>
+          <div class="metric"><span>Kimi scan</span><span class="metric-val">${kimi_ts}</span></div>
+          <div class="metric"><span>Agent run</span><span class="metric-val">${agent_ts}</span></div>
+          <div class="metric"><span>Flash crashes (1u)</span><span class="metric-val" style="color:#f0883e">${flashCount}</span></div>
+        </div>
+
+        <!-- Flash Crash -->
+        <div class="card">
+          <h2>⚡ Flash Crash Detector</h2>
+          ${renderFlash(state.flash_triggers)}
+        </div>
+
+        <!-- AI Agent verdict -->
+        <div class="card" style="grid-column: span 2">
+          <h2>🤖 AI Agent Workflow (Research → Strategy → Risk → Verify)</h2>
+          ${renderAgent(state.last_agent)}
+        </div>
+
+        <!-- Account Balans -->
+        <div class="card" style="grid-column: span 2">
+          <h2>💰 Demo Account — BloFin Paper Trading</h2>
+          ${renderBalance(balData)}
+        </div>
+
+        <!-- Signaal Performance — terugkijken -->
+        <div class="card" style="grid-column: span 2">
+          <h2>📈 Signaal Performance — Wat hadden eerdere signalen opgeleverd?</h2>
+          ${renderPerformance(perfData)}
+        </div>
+
+        <!-- Historische Backtest -->
+        <!-- Historische Backtest -->
+        <div class="card" style="grid-column: span 2" id="hist-card">
+          <h2>🔬 Historische Backtest — alle coins, alle tijden</h2>
+          <div id="hist-content">
+
+            <!-- Selecteer coin via dropdown OF vrij invoer -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+              <select id="hist-dropdown"
+                style="background:#0d1117;border:1px solid #30363d;border-radius:6px;
+                       padding:6px 10px;color:#e6edf3;font-size:.82rem;min-width:170px;outline:none"
+                onchange="onDropdownChange(this)">
+                <option value="">── Gevolgde coins ──</option>
+                <option value="" disabled>── Top coins ──</option>
+                <option value="BTCUSDT">BTC — Bitcoin</option>
+                <option value="ETHUSDT">ETH — Ethereum</option>
+                <option value="XRPUSDT">XRP — Ripple</option>
+                <option value="SOLUSDT">SOL — Solana</option>
+                <option value="BNBUSDT">BNB — Binance Coin</option>
+                <option value="ADAUSDT">ADA — Cardano</option>
+                <option value="AVAXUSDT">AVAX — Avalanche</option>
+                <option value="DOTUSDT">DOT — Polkadot</option>
+                <option value="LINKUSDT">LINK — Chainlink</option>
+                <option value="LTCUSDT">LTC — Litecoin</option>
+                <option value="MATICUSDT">MATIC — Polygon</option>
+                <option value="NEARUSDT">NEAR</option>
+                <option value="ARBUSDT">ARB — Arbitrum</option>
+                <option value="OPUSDT">OP — Optimism</option>
+                <option value="INJUSDT">INJ — Injective</option>
+                <option value="SUIUSDT">SUI</option>
+                <option value="SEIUSDT">SEI</option>
+                <option value="TIAUSDT">TIA — Celestia</option>
+                <option value="FETUSDT">FET — Fetch.ai</option>
+                <option value="RENDERUSDT">RENDER</option>
+                <option value="WIFUSDT">WIF — DogWifHat</option>
+                <option value="PEPEUSDT">PEPE</option>
+                <option value="DOGEUSDT">DOGE</option>
+                <option value="SHIBUSDT">SHIB</option>
+                <option value="XLMUSDT">XLM — Stellar</option>
+                <option value="ATOMUSDT">ATOM — Cosmos</option>
+                <option value="ALGOUSDT">ALGO — Algorand</option>
+                <option value="FTMUSDT">FTM — Fantom</option>
+                <option value="SANDUSDT">SAND — Sandbox</option>
+                <option value="MANAUSDT">MANA — Decentraland</option>
+                <option value="UNIUSDT">UNI — Uniswap</option>
+                <option value="AAVEUSDT">AAVE</option>
+                <option value="LDOUSDT">LDO — Lido</option>
+                <option value="APTUSDT">APT — Aptos</option>
+                <option value="STXUSDT">STX — Stacks</option>
+                <option value="RUNEUSDT">RUNE — THORChain</option>
+                <option value="JUPUSDT">JUP — Jupiter</option>
+                <option value="WLDUSDT">WLD — Worldcoin</option>
+                <option value="BONKUSDT">BONK</option>
+              </select>
+              <span style="color:#8b949e;font-size:.78rem">of</span>
+              <input id="hist-sym-input" type="text" placeholder="Eigen symbool, bijv. APEUSDT"
+                style="background:#0d1117;border:1px solid #30363d;border-radius:6px;
+                       padding:6px 12px;color:#e6edf3;font-size:.82rem;width:160px;outline:none"/>
+            </div>
+
+            <!-- Periode knoppen -->
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+              <span style="color:#8b949e;font-size:.78rem;margin-right:4px">Periode:</span>
+              <div style="display:flex;gap:4px" id="hist-periods">
+                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,3)">3m</button>
+                <button class="hist-btn" style="background:#1f4068;border-color:#58a6ff" onclick="setPeriod(this,6)">6m</button>
+                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,12)">1j</button>
+                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,24)">2j</button>
+                <button class="hist-btn" style="background:#2d1f63;border-color:#7c3aed;color:#a78bfa" onclick="setPeriod(this,0)">MAX ⭐</button>
+              </div>
+              <button class="hist-btn" onclick="runHistBacktestInput()" style="margin-left:8px;background:#238636">▶ Start Backtest</button>
+            </div>
+
+            <!-- Signaal filter -->
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+              <span style="color:#8b949e;font-size:.78rem;margin-right:4px">Signaal filter:</span>
+              <button class="sig-filter-btn active" onclick="setSigFilter(this,'')" data-filter="">Alle</button>
+              <button class="sig-filter-btn" onclick="setSigFilter(this,'PERFECT_DAY')" data-filter="PERFECT_DAY">⭐ Perfect Day</button>
+              <button class="sig-filter-btn" onclick="setSigFilter(this,'BREAKOUT_BULL')" data-filter="BREAKOUT_BULL">Breakout</button>
+              <button class="sig-filter-btn" onclick="setSigFilter(this,'MOMENTUM')" data-filter="MOMENTUM">Momentum</button>
+              <button class="sig-filter-btn" onclick="setSigFilter(this,'BUY')" data-filter="BUY">BUY</button>
+            </div>
+
+            <!-- AI auto-backtest status -->
+            <div id="hist-ai-status" style="font-size:.75rem;color:#58a6ff;margin-bottom:8px"></div>
+
+            <div id="hist-btns" style="display:none"></div><!-- hidden, coin list beheerd via dropdown -->
+            <div id="hist-result"></div>
+          </div>
+        </div>
+      </div>`;
+  } catch(e) {
+    document.getElementById("status-dot").style.background = "#f85149";
+    document.getElementById("app").innerHTML =
+      `<div id="error-msg">⚠️ Kan Control API niet bereiken (${e.message}). Controleer of de server draait.</div>`;
+  }
+}
+
+// ── Historische Backtest ──────────────────────────────────────────────────
+let histRunning  = false;
+let histMonths   = 6;
+let histSigFilter = "";
+
+function setSigFilter(btn, filter) {
+  histSigFilter = filter;
+  document.querySelectorAll(".sig-filter-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+}
+
+function setPeriod(btn, m) {
+  histMonths = m;
+  document.querySelectorAll("#hist-periods .hist-btn").forEach(b => {
+    b.style.background = "#0d1117";
+    b.style.borderColor = "#30363d";
+    b.style.color = "#c9d1d9";
+  });
+  btn.style.background = m === 0 ? "#2d1f63" : "#1f4068";
+  btn.style.borderColor = m === 0 ? "#7c3aed" : "#58a6ff";
+  btn.style.color = m === 0 ? "#a78bfa" : "#e6edf3";
+}
+
+function buildHistButtons(coins) {
+  // Voeg gevolgde coins toe aan de dropdown (bovenaan)
+  const dd = document.getElementById("hist-dropdown");
+  if (!dd || dd.dataset.built === "1") return;
+  dd.dataset.built = "1";
+  // Verwijder placeholder en voeg echte coins toe
+  const firstOpt = dd.options[0];
+  firstOpt.textContent = "── Gevolgd door Kimi ──";
+  coins.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.symbol;
+    opt.textContent = `${c.symbol.replace("USDT","")} — ${c.signal} (RSI ${(c.rsi||0).toFixed(0)})`;
+    dd.insertBefore(opt, dd.options[1]);
+  });
+}
+
+function onDropdownChange(sel) {
+  if (sel.value) {
+    document.getElementById("hist-sym-input").value = sel.value;
+  }
+}
+
+function setHistCoin(sym) {
+  document.getElementById("hist-sym-input").value = sym;
+}
+
+function runHistBacktestInput() {
+  const inputVal = document.getElementById("hist-sym-input").value.trim().toUpperCase();
+  const ddVal    = document.getElementById("hist-dropdown").value.toUpperCase();
+  const sym = inputVal || ddVal;
+  if (!sym) { alert("Selecteer een coin uit de dropdown of voer een symbool in."); return; }
+  runHistBacktest(sym);
+}
+
+async function runHistBacktest(symbol) {
+  if (histRunning) return;
+  histRunning = true;
+  const res = document.getElementById("hist-result");
+  const periodLabel = histMonths === 0 ? "MAX (alle beschikbare data)" : `${histMonths} maanden`;
+  res.innerHTML = `<div style='display:flex;align-items:center;gap:10px;color:#58a6ff;font-size:.85rem'>
+    <div class='spinner' style='width:20px;height:20px;margin:0'></div>
+    ${symbol} analyseren: ${periodLabel} × 1h candles... even geduld (~15-60s voor MAX).
+  </div>`;
+  document.querySelectorAll(".hist-btn").forEach(b => b.disabled = true);
+
+  try {
+    const data = await fetchJSON(`${API}/backtest/historical/${symbol}?interval=1h&months=${histMonths}`);
+    renderHistResult(symbol, data);
+  } catch(e) {
+    res.innerHTML = `<p style='color:#f85149'>⚠️ Fout: ${e.message}</p>`;
+  } finally {
+    histRunning = false;
+    document.querySelectorAll(".hist-btn").forEach(b => b.disabled = false);
+  }
+}
+
+function sigColor(pct) {
+  if (pct == null) return "#8b949e";
+  return pct >= 0 ? "#3fb950" : "#f85149";
+}
+
+function renderHistResult(symbol, d) {
+  const res = document.getElementById("hist-result");
+  const overall = d.overall_1h || {};
+  const by = d.by_signal || {};
+
+  const periodeStr = d.months === 0 ? "MAX (volledige geschiedenis)" : `${d.months} maanden`;
+  const filterSig  = histSigFilter || "";
+  // Als er een filter actief is, gebruik de stats van dat signaal
+  const showStats  = filterSig && by[filterSig] ? by[filterSig]["1h"] : overall;
+  const filterLabel = filterSig ? ` — gefilterd op ${filterSig === "PERFECT_DAY" ? "⭐ Perfect Day" : filterSig}` : "";
+  let html = `
+  <div style='margin-bottom:10px;font-size:.8rem;color:#8b949e'>
+    ${symbol} | ${d.candles} candles | ${d.signals_found} signalen gevonden | periode: ${periodeStr} × 1h${filterLabel}
+  </div>
+
+  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin-bottom:6px'>Resultaat na 1 uur:</div>
+  <div class='stat-grid'>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:${sigColor((showStats.win_rate_pct||0)-50)}'>${showStats.win_rate_pct ?? "—"}%</div>
+      <div class='stat-lbl'>Win-rate</div>
+    </div>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:${sigColor(showStats.avg_pnl_pct)}'>${(showStats.avg_pnl_pct >= 0 ? "+" : "") + (showStats.avg_pnl_pct ?? "—")}%</div>
+      <div class='stat-lbl'>Gem. P&amp;L</div>
+    </div>
+    <div class='stat-box'>
+      <div class='stat-val' style='color:#c9d1d9'>${showStats.count ?? "—"}</div>
+      <div class='stat-lbl'>Signalen</div>
+    </div>
+  </div>
+
+  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin:14px 0 6px'>Per signaaltype:</div>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse;font-size:.75rem'>
+    <thead>
+      <tr style='color:#8b949e;border-bottom:1px solid #30363d'>
+        <th style='text-align:left;padding:5px'>Signaal</th>
+        <th style='text-align:right;padding:5px'>#</th>
+        <th style='text-align:right;padding:5px'>Win% (1h)</th>
+        <th style='text-align:right;padding:5px'>P&amp;L 1h</th>
+        <th style='text-align:right;padding:5px'>P&amp;L 4h</th>
+        <th style='text-align:right;padding:5px'>P&amp;L 24h</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  const signalOrder = ["PERFECT_DAY","BREAKOUT_BULL","MOMENTUM","BUY"];
+  const filterSig = histSigFilter || "";
+  for (const sig of signalOrder) {
+    if (filterSig && sig !== filterSig) continue;
+    const s = by[sig];
+    if (!s || !s["1h"]) continue;
+    const h1 = s["1h"]; const h4 = s["4h"]; const h24 = s["24h"];
+    const p = (v, decimals=2) => v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(decimals)}%`;
+    const isHighlighted = filterSig === sig;
+    html += `<tr style='border-bottom:1px solid #21262d${isHighlighted ? ";background:#1a2d1a" : ""}'>
+      <td style='padding:5px'>${sig === "PERFECT_DAY" ? "⭐ PERFECT DAY" : sig}</td>
+      <td style='text-align:right;padding:5px'>${h1.count || 0}</td>
+      <td style='text-align:right;padding:5px;color:${sigColor((h1.win_rate_pct||0)-50)}'>${h1.win_rate_pct ?? "—"}%</td>
+      <td style='text-align:right;padding:5px;color:${sigColor(h1.avg_pnl_pct)}'>${p(h1.avg_pnl_pct)}</td>
+      <td style='text-align:right;padding:5px;color:${sigColor(h4.avg_pnl_pct)}'>${p(h4.avg_pnl_pct)}</td>
+      <td style='text-align:right;padding:5px;color:${sigColor(h24.avg_pnl_pct)}'>${p(h24.avg_pnl_pct)}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table></div>
+  <p style='font-size:.7rem;color:#8b949e;margin-top:10px'>
+    ⚠️ Backtest = historische simulatie. Geen garantie voor toekomstige resultaten.
+  </p>`;
+
+  res.innerHTML = html;
+}
+
+function logout() {
+  localStorage.removeItem("oc_token");
+  localStorage.removeItem("oc_expires");
+  localStorage.removeItem("oc_email");
+  window.location.href = "login.html";
+}
+
+render();
+setInterval(render, 10000);  // elke 10 seconden refreshen
+</script>
+</body>
+</html>

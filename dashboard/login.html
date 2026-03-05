@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>OpenClaw — Inloggen</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 16px;
+          padding: 40px 36px; width: 100%; max-width: 400px; }
+  .logo { text-align: center; font-size: 2rem; margin-bottom: 8px; }
+  h1 { text-align: center; font-size: 1.2rem; margin-bottom: 6px; }
+  .sub { text-align: center; font-size: 0.82rem; color: #8b949e; margin-bottom: 32px; }
+  label { display: block; font-size: 0.8rem; color: #8b949e; margin-bottom: 6px; }
+  input { width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+          padding: 10px 14px; color: #e6edf3; font-size: 0.95rem; outline: none; }
+  input:focus { border-color: #58a6ff; }
+  button { width: 100%; margin-top: 16px; padding: 11px; border-radius: 8px; border: none;
+           background: #238636; color: #fff; font-size: 0.95rem; font-weight: 600;
+           cursor: pointer; transition: background .2s; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+  .msg { margin-top: 14px; font-size: 0.82rem; text-align: center; min-height: 20px; }
+  .msg.ok  { color: #3fb950; }
+  .msg.err { color: #f85149; }
+  .step { display: none; }
+  .step.active { display: block; }
+  .back { background: #21262d; color: #8b949e; margin-top: 8px; font-weight: 400; }
+  .back:hover { background: #30363d; }
+  .code-hint { text-align: center; color: #8b949e; font-size: 0.8rem; margin-top: 10px; }
+  input[type=text].code-input { letter-spacing: 0.3em; font-size: 1.4rem; text-align: center; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🤖</div>
+  <h1>OpenClaw Apex</h1>
+  <p class="sub">Beveiligd dashboard — inloggen met Telegram</p>
+
+  <!-- Stap 1: E-mailadres -->
+  <div id="step1" class="step active">
+    <label for="email">Jouw e-mailadres</label>
+    <input type="email" id="email" placeholder="naam@voorbeeld.nl" autocomplete="email"/>
+    <button id="btn-request" onclick="requestCode()">Code via Telegram versturen</button>
+    <div id="msg1" class="msg"></div>
+  </div>
+
+  <!-- Stap 2: Code invoeren -->
+  <div id="step2" class="step">
+    <label for="code">6-cijferige code (verstuurd via Telegram)</label>
+    <input type="text" id="code" class="code-input" maxlength="6" placeholder="123456"
+           inputmode="numeric" autocomplete="one-time-code"/>
+    <p class="code-hint">Controleer Telegram voor de code (geldig 10 minuten)</p>
+    <button id="btn-verify" onclick="verifyCode()">Inloggen</button>
+    <button class="back" onclick="goBack()">← Terug</button>
+    <div id="msg2" class="msg"></div>
+  </div>
+</div>
+
+<script>
+const API = `${location.protocol}//${location.hostname}:8080`;
+let currentEmail = "";
+
+function show(id, text, isErr) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "msg " + (isErr ? "err" : "ok");
+}
+
+async function requestCode() {
+  const email = document.getElementById("email").value.trim();
+  if (!email || !email.includes("@")) {
+    show("msg1", "Voer een geldig e-mailadres in.", true);
+    return;
+  }
+  const btn = document.getElementById("btn-request");
+  btn.disabled = true;
+  btn.textContent = "Versturen...";
+  show("msg1", "", false);
+
+  try {
+    const r = await fetch(`${API}/auth/request`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Fout");
+    currentEmail = email;
+    document.getElementById("step1").classList.remove("active");
+    document.getElementById("step2").classList.add("active");
+    document.getElementById("code").focus();
+  } catch(e) {
+    show("msg1", "⚠️ " + e.message, true);
+    btn.disabled = false;
+    btn.textContent = "Code via Telegram versturen";
+  }
+}
+
+async function verifyCode() {
+  const code = document.getElementById("code").value.trim();
+  if (code.length !== 6) {
+    show("msg2", "Voer de 6-cijferige code in.", true);
+    return;
+  }
+  const btn = document.getElementById("btn-verify");
+  btn.disabled = true;
+  btn.textContent = "Controleren...";
+  show("msg2", "", false);
+
+  try {
+    const r = await fetch(`${API}/auth/verify`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email: currentEmail, code})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Fout");
+
+    // Sla sessie token op (24 uur)
+    localStorage.setItem("oc_token", data.token);
+    localStorage.setItem("oc_expires", data.expires_at);
+    localStorage.setItem("oc_email", currentEmail);
+
+    show("msg2", "✅ Ingelogd! Doorsturen naar dashboard...", false);
+    setTimeout(() => { window.location.href = "index.html"; }, 800);
+  } catch(e) {
+    show("msg2", "⚠️ " + e.message, true);
+    btn.disabled = false;
+    btn.textContent = "Inloggen";
+  }
+}
+
+function goBack() {
+  document.getElementById("step2").classList.remove("active");
+  document.getElementById("step1").classList.add("active");
+  document.getElementById("btn-request").disabled = false;
+  document.getElementById("btn-request").textContent = "Code via Telegram versturen";
+  show("msg1", "", false);
+}
+
+// Als al ingelogd → direct door
+const token = localStorage.getItem("oc_token");
+const exp   = localStorage.getItem("oc_expires");
+if (token && exp && new Date(exp) > new Date()) {
+  window.location.href = "index.html";
+}
+
+// Enter key
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    if (document.getElementById("step1").classList.contains("active")) requestCode();
+    else verifyCode();
+  }
+});
+</script>
+</body>
+</html>

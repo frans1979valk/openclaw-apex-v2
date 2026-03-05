@@ -1,0 +1,72 @@
+services:
+  apex_engine:
+    build: ./apex_engine
+    env_file:
+      - ./secrets/apex.env
+    networks:
+      - trade_net
+    volumes:
+      - apex_data:/var/apex
+    restart: unless-stopped
+
+  control_api:
+    build: ./control_api
+    env_file:
+      - ./secrets/control_api.env
+    networks:
+      - trade_net
+      - agent_net
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      - apex_data:/var/apex
+    restart: unless-stopped
+
+  openclaw:
+    build: ./openclaw
+    env_file:
+      - ./secrets/openclaw.env
+    networks:
+      - agent_net
+    volumes:
+      - openclaw_workspace:/workspace
+    restart: unless-stopped
+
+  dashboard:
+    image: nginx:alpine
+    networks:
+      - agent_net
+    ports:
+      - "0.0.0.0:3000:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+      - ./dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  tg_coordinator_bot:
+    build:
+      context: ./telegram
+      dockerfile: coordinator_bot/Dockerfile
+    env_file:
+      - ./secrets/telegram_coordinator.env
+    networks:
+      - agent_net
+    restart: unless-stopped
+
+  tg_discuss_bot:
+    build:
+      context: ./telegram
+      dockerfile: discuss_bot/Dockerfile
+    env_file:
+      - ./secrets/telegram_discuss.env
+    networks:
+      - agent_net
+    restart: unless-stopped
+
+networks:
+  trade_net:
+  agent_net:
+
+volumes:
+  apex_data:
+  openclaw_workspace:

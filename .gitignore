@@ -1,0 +1,21 @@
+# Secrets — nooit committen
+secrets/*.env
+!secrets/*.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Docker
+.dockerignore
+
+# DB / runtime data
+*.db
+*.sqlite
+
+# Logs
+*.log
