@@ -1,0 +1,51 @@
+# OpenClaw Gateway — Production Docker Build
+#
+# Bouwt de openclaw/openclaw TypeScript gateway vanuit de submodule.
+# Node 22.12.0+ vereist, pnpm voor package management.
+#
+# Gebonden aan localhost (127.0.0.1:18789) via docker-compose.
+# Config: gemount via ./openclaw_config → /root/.openclaw/
+# Skills: gemount via ./skills           → /workspace/skills/
+# Tools:  gemount via ./openclaw_tools/scripts → /workspace/tools/
+
+# ── Stage 1: Build ─────────────────────────────────────────────────────────────
+FROM node:22-slim AS builder
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+# Kopieer gehele submodule (gebundeld pnpm-lock.yaml staat hier al in)
+COPY openclaw_framework/ .
+
+# Installeer dependencies (frozen voor reproducibility)
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+# Build TypeScript → dist/
+RUN pnpm build 2>&1 || pnpm run build 2>&1 || true
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────────
+FROM node:22-slim
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Python3 voor de gatekeeper tool scripts
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip curl && \
+    pip3 install --no-cache-dir requests --break-system-packages && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Kopieer build output inclusief node_modules
+COPY --from=builder /app /app
+
+# Workspace dir voor skills en tools (gemount via volumes)
+RUN mkdir -p /workspace/skills /workspace/tools /root/.openclaw
+
+ENV NODE_ENV=production
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 18789
+
+# Start de OpenClaw gateway
+CMD ["node", "openclaw.mjs", "gateway"]

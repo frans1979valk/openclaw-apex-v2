@@ -59,6 +59,30 @@ services:
     depends_on:
       - control_api
 
+  # ── OpenClaw Gateway (Operator OS) ──────────────────────────────────────────
+  # Echte openclaw/openclaw TypeScript gateway. Telegram-only, localhost-bound.
+  # Config: ./openclaw_config/openclaw.json → /root/.openclaw/
+  # Skills: ./skills/ → /workspace/skills/
+  # Tools:  ./openclaw_tools/scripts/ → /workspace/tools/
+  openclaw_gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    env_file:
+      - ./secrets/openclaw_gateway.env
+    volumes:
+      - ./openclaw_config:/root/.openclaw:ro
+      - ./skills:/workspace/skills:ro
+      - ./openclaw_tools/scripts:/workspace/tools:ro
+      - apex_data:/var/apex
+    networks:
+      - agent_net
+    ports:
+      - "127.0.0.1:18789:18789"
+    restart: unless-stopped
+    depends_on:
+      - control_api
+
   tg_coordinator_bot:
     build:
       context: ./telegram

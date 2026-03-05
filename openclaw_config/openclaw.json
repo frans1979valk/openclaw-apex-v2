@@ -1,0 +1,128 @@
+{
+  "$schema": "https://openclaw.bot/schema/config/v1",
+
+  "gateway": {
+    "port": 18789,
+    "bind": "custom",
+    "customBindAddress": "0.0.0.0",
+    "auth": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "tls": {
+      "enabled": false
+    },
+    "controlUi": {
+      "allowedOrigins": ["http://127.0.0.1:3000"]
+    }
+  },
+
+  "providers": {
+    "anthropic": {
+      "apiKey": "${ANTHROPIC_API_KEY}"
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "accounts": [
+        {
+          "name": "openclaw-operator",
+          "botToken": "${TELEGRAM_BOT_TOKEN}",
+          "dmPolicy": "allowlist",
+          "allowedIds": ["${TG_ALLOWED_USER_ID}"],
+          "replyToMode": "first",
+          "streaming": {
+            "mode": "block"
+          },
+          "commands": {
+            "enabled": true
+          }
+        }
+      ]
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "model": {
+        "provider": "anthropic",
+        "id": "claude-sonnet-4-6"
+      }
+    },
+    "list": [
+      {
+        "id": "operator_risk_agent",
+        "name": "Operator Risk",
+        "default": true,
+        "skills": ["gatekeeper"],
+        "model": {
+          "provider": "anthropic",
+          "id": "claude-sonnet-4-6"
+        },
+        "identity": {
+          "name": "OpenClaw Risk",
+          "description": "Bewaakt de Apex trading engine. Voert uitsluitend control_api calls uit. Geen exchange keys, geen directe trades."
+        }
+      },
+      {
+        "id": "research_agent",
+        "name": "Research",
+        "skills": ["browser", "gatekeeper"],
+        "model": {
+          "provider": "anthropic",
+          "id": "claude-sonnet-4-6"
+        },
+        "identity": {
+          "name": "OpenClaw Research",
+          "description": "Marktanalyse en nieuws research. Leest alleen, schrijft geen trades."
+        }
+      },
+      {
+        "id": "builder_agent",
+        "name": "Builder",
+        "skills": ["github", "gatekeeper"],
+        "model": {
+          "provider": "anthropic",
+          "id": "claude-sonnet-4-6"
+        },
+        "identity": {
+          "name": "OpenClaw Builder",
+          "description": "Code generatie, git, docker builds. Mag proposals indienen maar nooit deployen zonder expliciete goedkeuring."
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "type": "route",
+        "agentId": "operator_risk_agent",
+        "match": {
+          "channel": "telegram"
+        }
+      }
+    ]
+  },
+
+  "skills": {
+    "load": {
+      "extraDirs": ["/workspace/skills"],
+      "watch": false
+    },
+    "allowBundled": ["browser", "github"],
+    "entries": {
+      "browser": {
+        "enabled": true
+      },
+      "github": {
+        "enabled": true
+      },
+      "gatekeeper": {
+        "enabled": true,
+        "config": {
+          "controlApiUrl": "${CONTROL_API_URL}",
+          "controlApiToken": "${CONTROL_API_TOKEN}",
+          "toolsDir": "/workspace/tools"
+        }
+      }
+    }
+  }
+}
