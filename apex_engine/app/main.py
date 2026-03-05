@@ -33,6 +33,17 @@ NEWS_POLL_INTERVAL     = int(os.getenv("NEWS_POLL_INTERVAL", "120"))   # seconde
 EXCHANGE_INTEL_ENABLED = os.getenv("EXCHANGE_INTEL_ENABLED", "true").lower() == "true"
 
 HALT_FILE = "/var/apex/trading_halt.json"
+STATE_PATH = "/var/apex/bot_state.json"
+RSI_BUY_THRESHOLD = float(os.getenv("RSI_BUY_THRESHOLD", "35"))  # default: geen koop boven RSI 35
+
+
+def _get_config_overrides() -> dict:
+    """Lees config_overrides uit bot_state.json (gezet door control_api proposals)."""
+    try:
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("config_overrides") or {}
+    except Exception:
+        return {}
 
 
 def _is_trading_halted() -> bool:
@@ -247,10 +258,16 @@ def main():
                 demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
                 last_signal_log[sig_key] = now
 
-            # Order logica — IJZEREN WET: geen koop als crash score te hoog
+            # Order logica — IJZEREN WET: geen koop als crash score te hoog of RSI te hoog
             order_signal = signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY")
+            _overrides = _get_config_overrides()
+            _rsi_limit = _overrides.get("rsi_buy_threshold", RSI_BUY_THRESHOLD)
+            _current_rsi = ind.get("rsi")
+            _rsi_ok = _current_rsi is not None and _current_rsi < _rsi_limit
+            if order_signal and not _rsi_ok and _current_rsi is not None:
+                print(f"[apex] RSI filter: {sym} RSI={_current_rsi:.1f} >= {_rsi_limit} — koop geblokkeerd")
             if order_signal and price and not flash_triggered and not ind.get("danger") \
-               and safe_to_buy \
+               and safe_to_buy and _rsi_ok \
                and (now - last_order.get(sym, 0)) > ORDER_COOLDOWN \
                and not _is_trading_halted():
                 try:
