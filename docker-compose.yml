@@ -43,6 +43,22 @@ services:
       - ./dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
 
+  openclaw_runtime:
+    build:
+      context: .
+      dockerfile: ./openclaw_runtime/Dockerfile
+    env_file:
+      - ./secrets/openclaw.env
+    networks:
+      - agent_net
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - apex_data:/var/apex
+    restart: unless-stopped
+    depends_on:
+      - control_api
+
   tg_coordinator_bot:
     build:
       context: ./telegram

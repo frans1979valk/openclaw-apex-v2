@@ -1,0 +1,101 @@
+{
+  "version": "1.0",
+  "platform": "openclaw-apex-v2",
+  "description": "Tools voor OpenClaw agents — alle acties via control_api, nooit direct naar exchange",
+  "tools": [
+    {
+      "name": "tool_status",
+      "description": "Haal actuele platform status op: gezondheid, coin signalen, win-rate, crash score",
+      "script": "scripts/tool_status.py",
+      "args": [],
+      "output": "json",
+      "category": "monitoring",
+      "safe": true
+    },
+    {
+      "name": "tool_run_backtest",
+      "description": "Start historische backtest voor een coin. Geeft win-rate, profit factor, drawdown terug.",
+      "script": "scripts/tool_run_backtest.py",
+      "args": [
+        {"name": "symbol", "type": "string", "required": true, "example": "BTCUSDT"},
+        {"name": "interval", "type": "string", "required": false, "default": "1h", "options": ["15m","1h","4h"]},
+        {"name": "limit", "type": "int", "required": false, "default": 500}
+      ],
+      "output": "json",
+      "category": "analysis",
+      "safe": true
+    },
+    {
+      "name": "tool_propose_params",
+      "description": "Dien een parameter-voorstel in (RSI drempels, stoploss, takeprofit, positiegrootte). Altijd binnen PARAM_BOUNDS.",
+      "script": "scripts/tool_propose_params.py",
+      "args": [
+        {"name": "params", "type": "json", "required": true, "example": "{\"rsi_buy_threshold\": 32}"},
+        {"name": "reden", "type": "string", "required": true, "example": "Win-rate verbetert bij lagere RSI drempel"}
+      ],
+      "output": "json",
+      "category": "strategy",
+      "safe": true,
+      "note": "Alleen voorstel — apply vereist aparte bevestiging (policy)"
+    },
+    {
+      "name": "tool_apply_proposal",
+      "description": "Pas een goedgekeurd voorstel toe. Controleert eerst de confirm policy.",
+      "script": "scripts/tool_apply_proposal.py",
+      "args": [
+        {"name": "proposal_id", "type": "int", "required": true}
+      ],
+      "output": "json",
+      "category": "strategy",
+      "safe": false,
+      "note": "Geblokkeerd als confirm_required=true (default). Dan Telegram /ok <id> vereist."
+    },
+    {
+      "name": "tool_pause_trading",
+      "description": "Pauzeer trading voor N minuten. Gebruik bij hoog risico of marktinstabiliteit.",
+      "script": "scripts/tool_pause_trading.py",
+      "args": [
+        {"name": "minutes", "type": "int", "required": false, "default": 30},
+        {"name": "reason", "type": "string", "required": false}
+      ],
+      "output": "json",
+      "category": "risk",
+      "safe": false
+    },
+    {
+      "name": "tool_resume_trading",
+      "description": "Hervat trading na pauze of stop.",
+      "script": "scripts/tool_resume_trading.py",
+      "args": [],
+      "output": "json",
+      "category": "risk",
+      "safe": false
+    },
+    {
+      "name": "tool_fetch_news",
+      "description": "Haal recente marktgebeurtenissen op (flash crashes, BTC cascades, pre-crash warnings).",
+      "script": "scripts/tool_fetch_news.py",
+      "args": [
+        {"name": "hours", "type": "int", "required": false, "default": 24},
+        {"name": "symbol", "type": "string", "required": false}
+      ],
+      "output": "json",
+      "category": "monitoring",
+      "safe": true
+    }
+  ],
+  "param_bounds": {
+    "rsi_buy_threshold":  [20, 40],
+    "rsi_sell_threshold": [60, 80],
+    "stoploss_pct":       [1.5, 6.0],
+    "takeprofit_pct":     [3.0, 12.0],
+    "position_size_base": [1, 5]
+  },
+  "constraints": [
+    "Nooit ALLOW_LIVE=true zetten",
+    "Nooit direct de BloFin API aanroepen — altijd via control_api",
+    "Altijd tool_status EERST aanroepen voor analyse",
+    "Altijd backtest doen voor parameter-voorstel",
+    "Max 3 applies per dag (enforcement in control_api)"
+  ]
+}

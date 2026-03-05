@@ -1111,6 +1111,199 @@ def history_summary(symbol: str,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── OpenClaw Agent Runtime Endpoints ────────────────────────────────────────
+
+# Backtest job store (in-memory, eenvoudig genoeg)
+_backtest_jobs: dict = {}   # job_id -> {status, result, ts}
+
+class BacktestRunRequest(BaseModel):
+    symbol: str
+    interval: str = "1h"
+    limit: int = 500
+    agent: str = "openclaw_runtime"
+
+
+@app.post("/backtest/run")
+def backtest_run(
+    body: BacktestRunRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Start een backtest job asynchroon. Geeft job_id terug."""
+    auth(x_api_key)
+    import uuid
+    job_id = str(uuid.uuid4())[:8]
+    _backtest_jobs[job_id] = {"status": "running", "result": None, "ts": datetime.now(timezone.utc).isoformat()}
+
+    def _run(job_id: str, symbol: str, interval: str, limit: int):
+        try:
+            import talib
+            r = requests.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": symbol.upper(), "interval": interval, "limit": limit},
+                timeout=15
+            )
+            r.raise_for_status()
+            data = r.json()
+            close  = np.array([float(c[4]) for c in data])
+            high   = np.array([float(c[2]) for c in data])
+            low    = np.array([float(c[3]) for c in data])
+            rsi          = talib.RSI(close, 14)
+            _, _, hist   = talib.MACD(close, 12, 26, 9)
+            ema20        = talib.EMA(close, 20)
+            ema50        = talib.EMA(close, 50)
+            fee    = 6 / 10000
+            trades = []
+            pos    = None
+            for i in range(50, len(close)):
+                if any(np.isnan(x[i]) for x in [rsi, hist, ema20, ema50]):
+                    continue
+                price = close[i]
+                if pos is None and rsi[i] < 45 and hist[i] > 0:
+                    pos = price
+                elif pos is not None and (rsi[i] > 60 or price < pos * 0.97):
+                    pnl = (price / pos - 1) - 2 * fee
+                    trades.append(round(pnl * 100, 4))
+                    pos = None
+            if not trades:
+                _backtest_jobs[job_id] = {"status": "done", "result": {"symbol": symbol, "trades": 0}, "ts": datetime.now(timezone.utc).isoformat()}
+                return
+            wins   = [p for p in trades if p > 0]
+            losses = [abs(p) for p in trades if p <= 0]
+            arr    = np.array(trades)
+            eq     = np.cumsum(arr)
+            peak   = np.maximum.accumulate(eq)
+            result = {
+                "symbol": symbol, "interval": interval, "bars": len(close),
+                "trades": len(trades),
+                "win_rate": round(len(wins) / len(trades) * 100, 2),
+                "profit_factor": round(sum(wins) / sum(losses), 3) if losses else 999.0,
+                "max_drawdown_pct": round(float(np.max(peak - eq)), 4),
+                "sharpe": round(float(np.mean(arr) / np.std(arr) * np.sqrt(len(arr))), 3) if np.std(arr) > 0 else 0.0,
+                "total_return_pct": round(float(sum(trades)), 4),
+            }
+            _backtest_jobs[job_id] = {"status": "done", "result": result, "ts": datetime.now(timezone.utc).isoformat()}
+        except Exception as e:
+            _backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "ts": datetime.now(timezone.utc).isoformat()}
+
+    background_tasks.add_task(_run, job_id, body.symbol.upper(), body.interval, body.limit)
+    return {"job_id": job_id, "status": "running", "symbol": body.symbol.upper()}
+
+
+@app.get("/backtest/result/{job_id}")
+def backtest_result(
+    job_id: str,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Haal backtest resultaat op via job_id."""
+    auth(x_api_key)
+    job = _backtest_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job niet gevonden")
+    return {"job_id": job_id, **job}
+
+
+@app.get("/metrics/performance")
+def metrics_performance(
+    limit: int = 100,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Geaggregeerde strategie-performance voor OpenClaw agents."""
+    auth(x_api_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Per signaaltype: win rate, gem. PnL 1u en 4u
+        sig_rows = conn.execute("""
+            SELECT signal,
+                   COUNT(*) as n,
+                   ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
+                   ROUND(AVG(pnl_1h_pct), 3) as avg_pnl_1h,
+                   ROUND(AVG(pnl_4h_pct), 3) as avg_pnl_4h,
+                   ROUND(MIN(pnl_1h_pct), 3) as worst_1h,
+                   ROUND(MAX(pnl_1h_pct), 3) as best_1h
+            FROM signal_performance
+            WHERE pnl_1h_pct IS NOT NULL
+            GROUP BY signal ORDER BY n DESC LIMIT 10
+        """).fetchall()
+        # Per coin: win rate
+        coin_rows = conn.execute("""
+            SELECT symbol,
+                   COUNT(*) as n,
+                   ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
+                   ROUND(AVG(pnl_1h_pct), 3) as avg_pnl_1h
+            FROM signal_performance
+            WHERE pnl_1h_pct IS NOT NULL
+            GROUP BY symbol ORDER BY n DESC LIMIT 10
+        """).fetchall()
+        # Overall
+        overall = conn.execute("""
+            SELECT COUNT(*) as total,
+                   ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
+                   ROUND(AVG(pnl_1h_pct), 3) as avg_pnl_1h,
+                   ROUND(SUM(pnl_1h_pct), 3) as total_pnl_1h
+            FROM signal_performance WHERE pnl_1h_pct IS NOT NULL
+        """).fetchone()
+        # Pre-crash statistieken
+        crash_stats = conn.execute("""
+            SELECT ROUND(AVG(score), 1) as avg_score, ROUND(MAX(score), 1) as max_score,
+                   COUNT(*) as readings
+            FROM crash_score_log WHERE ts >= datetime('now', '-24 hours')
+        """).fetchone()
+        conn.close()
+        return {
+            "overall": {
+                "total_signals": overall[0] or 0,
+                "win_rate_pct": overall[1] or 0,
+                "avg_pnl_1h_pct": overall[2] or 0,
+                "total_pnl_1h_pct": overall[3] or 0,
+            },
+            "by_signal": [
+                {"signal": r[0], "n": r[1], "win_rate": r[2],
+                 "avg_pnl_1h": r[3], "avg_pnl_4h": r[4], "worst_1h": r[5], "best_1h": r[6]}
+                for r in sig_rows
+            ],
+            "by_coin": [
+                {"symbol": r[0], "n": r[1], "win_rate": r[2], "avg_pnl_1h": r[3]}
+                for r in coin_rows
+            ],
+            "crash_24h": {
+                "avg_score": crash_stats[0] or 0,
+                "max_score": crash_stats[1] or 0,
+                "readings": crash_stats[2] or 0,
+            },
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ConfirmPolicyRequest(BaseModel):
+    confirm_required: bool
+
+
+# Confirm policy (default: true — apply vereist Telegram goedkeuring)
+_CONFIRM_REQUIRED: bool = os.getenv("CONFIRM_REQUIRED", "true").lower() == "true"
+
+
+@app.get("/policy/confirm")
+def get_confirm_policy(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Geeft huidige confirm policy terug."""
+    auth(x_api_key)
+    return {"confirm_required": _CONFIRM_REQUIRED}
+
+
+@app.post("/policy/confirm")
+def set_confirm_policy(
+    body: ConfirmPolicyRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Stel confirm policy in (true = Telegram goedkeuring vereist voor apply)."""
+    auth(x_api_key)
+    global _CONFIRM_REQUIRED
+    _CONFIRM_REQUIRED = body.confirm_required
+    return {"confirm_required": _CONFIRM_REQUIRED, "status": "ingesteld"}
+
+
 @app.get("/stream")
 async def sse_stream(token: str = Query(default="")):
     """

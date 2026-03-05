@@ -1,0 +1,3 @@
+[submodule "openclaw_framework"]
+	path = openclaw_framework
+	url = https://github.com/openclaw/openclaw

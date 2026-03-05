@@ -167,6 +167,88 @@ PARAM_BOUNDS = {
 
 ---
 
+## OpenClaw Framework Integratie
+
+Dit platform integreert het [openclaw/openclaw](https://github.com/openclaw/openclaw) framework als multi-agent runtime.
+
+### Architectuur
+
+```
+┌─────────────────────────────────────────────────────┐
+│                openclaw_runtime                      │
+│  ┌──────────────┐ ┌──────────────┐ ┌─────────────┐  │
+│  │ research_    │ │ strategy_    │ │ risk_       │  │
+│  │ agent        │ │ agent        │ │ agent       │  │
+│  │ (read-only)  │ │ (propose)    │ │ (pause)     │  │
+│  └──────┬───────┘ └──────┬───────┘ └──────┬──────┘  │
+│         └────────────────┼────────────────┘          │
+│                    Kimi LLM (Moonshot)                │
+└─────────────────────────┬───────────────────────────┘
+                          │ HTTP tools
+                          ▼
+              ┌───────────────────────┐
+              │     control_api        │
+              │  :8080 (FastAPI)       │
+              └───────────┬───────────┘
+                          │
+              ┌───────────▼───────────┐
+              │     apex_engine        │
+              │  (BloFin demo trades)  │
+              └───────────────────────┘
+```
+
+### Agents
+
+| Agent | Interval | Bevoegdheden |
+|-------|----------|--------------|
+| `research_agent` | 1 uur | Lezen: status, backtest, nieuws |
+| `strategy_agent` | 2 uur | + Voorstellen: propose_params |
+| `risk_agent` | 30 min | + Schrijven: pause/resume trading |
+
+### Agent endpoints (openclaw_runtime :8090)
+
+```
+POST /agents/research   — handmatig research starten
+POST /agents/strategy   — handmatig strategy starten
+POST /agents/risk       — handmatig risk check starten
+GET  /agents/status     — overzicht intervals + tools
+GET  /health            — health check
+```
+
+### Beschikbare tools
+
+Zie `openclaw_tools/registry.json` voor de volledige registry.
+
+| Tool | Schrijf | Beschrijving |
+|------|---------|--------------|
+| `tool_status` | Nee | Markt + engine status |
+| `tool_run_backtest` | Nee | Backtest uitvoeren |
+| `tool_fetch_news` | Nee | Recente events |
+| `tool_propose_params` | Ja | Parameter voorstel indienen |
+| `tool_apply_proposal` | Ja | Voorstel toepassen (vereist /ok) |
+| `tool_pause_trading` | Ja | Trading pauzeren |
+| `tool_resume_trading` | Ja | Trading hervatten |
+
+### Parameter grenzen (PARAM_BOUNDS)
+
+| Parameter | Min | Max |
+|-----------|-----|-----|
+| `rsi_buy_threshold` | 20 | 40 |
+| `rsi_sell_threshold` | 60 | 80 |
+| `stoploss_pct` | 1.5 | 6.0 |
+| `takeprofit_pct` | 3.0 | 12.0 |
+| `position_size_base` | 1 | 5 |
+
+### Verschil openclaw.bot vs openclaw/openclaw vs dit platform
+
+| | openclaw.bot | openclaw/openclaw | Dit platform |
+|-|-------------|-------------------|--------------|
+| Type | Chat aggregator app | TypeScript AI framework | Python trading platform |
+| Doel | Chat UI met meerdere AI's | Personal AI agent runtime | Crypto auto-trading |
+| Basis | Commercieel product | Open source framework | Dit repo |
+
+---
+
 ## Projectstructuur
 
 ```
@@ -187,6 +269,15 @@ openclaw-apex-v2/
 ├── openclaw/              # Leer-agent (Claude + Kimi)
 │   ├── bot.py
 │   └── clawbot.py
+├── openclaw_runtime/      # Multi-agent orchestrator (nieuw)
+│   ├── main.py            # FastAPI + agent runner
+│   └── Dockerfile
+├── openclaw_tools/        # Agent tools (nieuw)
+│   ├── registry.json      # Tool registry
+│   ├── scripts/           # tool_*.py scripts
+│   └── prompts/           # *_agent.md prompts
+├── openclaw_framework/    # openclaw/openclaw submodule (nieuw)
+│   └── Dockerfile.runtime # Node.js 22 gateway build
 ├── dashboard/             # Web UI (HTML/JS/Nginx)
 │   └── index.html
 ├── telegram/
@@ -195,6 +286,9 @@ openclaw-apex-v2/
 ├── secrets/               # API keys (NIET in git)
 │   ├── *.env              # Echte keys (gitignored)
 │   └── *.env.example      # Templates (in git)
+├── install.sh             # Eerste installatie
+├── update.sh              # Update naar laatste versie
+├── doctor.sh              # Diagnose platform health
 └── docker-compose.yml
 ```
 
