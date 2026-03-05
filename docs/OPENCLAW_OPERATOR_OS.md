@@ -260,4 +260,39 @@ docker compose build --no-cache openclaw_gateway
 Of check Node.js versie in de container (vereist 22.12.0+).
 
 **Skills niet gevonden:**
-Controleer of `./skills/gatekeeper/SKILL.md` bestaat en of het volume correct gemount is in docker-compose.yml.
+
+1. Controleer dat `./skills/gatekeeper/SKILL.md` bestaat op de host:
+```bash
+cat skills/gatekeeper/SKILL.md | head -5
+```
+
+2. Controleer dat het volume correct gemount is in de container:
+```bash
+docker compose exec openclaw_gateway ls -la /workspace/skills/gatekeeper/
+```
+
+3. Controleer `extraDirs` in config:
+```bash
+docker compose exec openclaw_gateway cat /root/.openclaw/openclaw.json | grep -A3 extraDirs
+```
+
+4. Full restart vereist na skill toevoeging (config reload is niet genoeg):
+```bash
+docker compose restart openclaw_gateway
+```
+
+5. Fallback: als `extraDirs` niet werkt, kopieer skills naar `~/.openclaw/skills/` in de container:
+```bash
+docker compose exec openclaw_gateway cp -r /workspace/skills/* /root/.openclaw/skills/ 2>/dev/null
+docker compose restart openclaw_gateway
+```
+
+**Health endpoint stuurt HTML i.p.v. JSON:**
+Bekende bug in sommige OpenClaw versies. Check met:
+```bash
+curl -s http://127.0.0.1:18789/health | head -1
+```
+Als je `<html` ziet: de gateway control UI overschrijft `/health`. Gebruik dan:
+```bash
+docker compose exec openclaw_gateway node openclaw.mjs gateway status
+```

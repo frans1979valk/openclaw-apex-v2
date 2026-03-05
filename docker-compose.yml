@@ -79,6 +79,14 @@ services:
       - agent_net
     ports:
       - "127.0.0.1:18789:18789"
+    healthcheck:
+      # /health kan een HTML 200 teruggeven (bekende bug).
+      # Check dat de response JSON bevat met "status" key.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:18789/health 2>/dev/null | grep -q '\"status\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     depends_on:
       - control_api

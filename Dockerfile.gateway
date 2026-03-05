@@ -19,14 +19,19 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
 
-# Kopieer gehele submodule (gebundeld pnpm-lock.yaml staat hier al in)
+# Kopieer gehele submodule — gepind op v2026.3.2+ (ClawJacked fix v2026.2.25)
 COPY openclaw_framework/ .
+
+# Versie check: weiger build als submodule ouder is dan v2026.2.25
+RUN node -e "const v=require('./package.json').version; \
+  if(v < '2026.2.25') { console.error('FATAL: OpenClaw version '+v+' < 2026.2.25 (ClawJacked fix). Update submodule.'); process.exit(1); } \
+  console.log('OpenClaw version: '+v+' (ok)');"
 
 # Installeer dependencies (frozen voor reproducibility)
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
-# Build TypeScript → dist/
-RUN pnpm build 2>&1 || pnpm run build 2>&1 || true
+# Build TypeScript → dist/  (MUST succeed — no || true)
+RUN pnpm run build
 
 # ── Stage 2: Runtime ───────────────────────────────────────────────────────────
 FROM node:22-slim

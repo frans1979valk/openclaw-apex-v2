@@ -146,6 +146,17 @@ Twee modi in control_api:
 
 ---
 
+## Versie pinning & supply chain
+
+- **OpenClaw submodule gepind op v2026.3.2** (bevat ClawJacked fix uit v2026.2.25)
+- Dockerfile.gateway controleert minimale versie bij build: `< 2026.2.25` → hard fail
+- **Geen marketplace skills:** `skills.allowBundled` beperkt tot `["browser", "github"]`
+- Alle custom skills komen uit `./skills/` (gevendord in onze repo)
+- Skills worden read-only gemount in de container (`./skills:/workspace/skills:ro`)
+- Update procedure: `git submodule update --remote`, tag controleren, rebuild
+
+---
+
 ## Audit & logging
 
 Alle tool-aanroepen worden gelogd in `/var/apex/openclaw_tools.log` (gemount volume `apex_data`).

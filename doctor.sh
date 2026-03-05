@@ -60,15 +60,22 @@ echo "--- API Health Checks ---"
 check_http() {
   local url="$1"
   local label="$2"
-  if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
-    pass "$label: bereikbaar ($url)"
-  else
+  local body
+  body=$(curl -sf --max-time 5 "$url" 2>/dev/null)
+  if [[ $? -ne 0 ]]; then
     fail "$label: niet bereikbaar ($url)"
+  elif echo "$body" | grep -q '"status"'; then
+    pass "$label: bereikbaar + JSON ok ($url)"
+  elif echo "$body" | grep -qi '<html'; then
+    warn "$label: bereikbaar maar stuurt HTML i.p.v. JSON ($url)"
+  else
+    pass "$label: bereikbaar ($url)"
   fi
 }
 
 check_http "http://127.0.0.1:8080/health" "Control API"
 check_http "http://127.0.0.1:8090/health" "OpenClaw Runtime"
+check_http "http://127.0.0.1:18789/health" "OpenClaw Gateway"
 check_http "http://127.0.0.1:3000/"       "Dashboard"
 echo ""
 
