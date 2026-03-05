@@ -1,9 +1,11 @@
 import os, json, sqlite3, requests, secrets, random, time
+import asyncio
 import numpy as np
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 DB_PATH = "/var/apex/apex.db"
 STATE_PATH = "/var/apex/bot_state.json"
@@ -607,23 +609,28 @@ def historical_signals(
 
 @app.get("/balance")
 def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
-    """Toon demo account balans overzicht op basis van order history."""
+    """Toon demo account balans overzicht — echte virtuele $1000 tracking."""
     auth(x_api_key)
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        # Totaal orders
-        cur.execute("SELECT COUNT(*), SUM(CAST(size AS REAL) * price) FROM orders")
+
+        # Demo balance tabel (aanmaken als hij nog niet bestaat)
+        conn.execute("""CREATE TABLE IF NOT EXISTS demo_balance(
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            balance REAL NOT NULL DEFAULT 1000.0,
+            peak_balance REAL NOT NULL DEFAULT 1000.0,
+            total_trades INTEGER DEFAULT 0,
+            winning_trades INTEGER DEFAULT 0,
+            total_volume_usdt REAL DEFAULT 0
+        )""")
+        conn.execute("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
+        conn.commit()
+
+        cur.execute("SELECT balance, peak_balance, total_trades, winning_trades, total_volume_usdt FROM demo_balance WHERE id=1")
         row = cur.fetchone()
-        total_orders = row[0] or 0
-        total_volume = round(row[1] or 0.0, 2)
-        # Recente orders
-        cur.execute("""
-            SELECT ts, symbol, side, size, price FROM orders
-            ORDER BY id DESC LIMIT 10
-        """)
-        recent = [{"ts": r[0], "symbol": r[1], "side": r[2], "size": r[3], "price": r[4]}
-                  for r in cur.fetchall()]
+        balance, peak, total, wins, vol = row if row else (1000.0, 1000.0, 0, 0, 0)
+
         # Signal performance stats
         cur.execute("""
             SELECT COUNT(*), AVG(pnl_1h_pct),
@@ -631,17 +638,79 @@ def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY"))
             FROM signal_performance WHERE status='closed'
         """)
         sp = cur.fetchone()
+
+        # Recente demo trades
+        conn.execute("""CREATE TABLE IF NOT EXISTS demo_account(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT, symbol TEXT, action TEXT, price REAL,
+            virtual_size_usdt REAL, virtual_pnl_usdt REAL DEFAULT 0,
+            balance_after REAL, signal TEXT, note TEXT
+        )""")
+        cur.execute("""
+            SELECT ts, symbol, action, price, virtual_size_usdt, virtual_pnl_usdt, signal
+            FROM demo_account ORDER BY id DESC LIMIT 10
+        """)
+        recent = [{
+            "ts": r[0], "symbol": r[1], "side": r[2],
+            "price": r[3], "size": round((r[4] or 0) / r[3], 6) if r[3] else 0,
+            "pnl_usdt": r[5], "signal": r[6]
+        } for r in cur.fetchall()]
         conn.close()
+
+        win_rate = round(wins / total * 100, 1) if total > 0 else round((sp[2] or 0), 1)
+        pnl_total = round(balance - 1000.0, 2)
         return {
-            "account_type":   "demo",
-            "exchange":       "BloFin Demo",
-            "demo_start_usdt": 10000.0,
-            "total_orders":   total_orders,
-            "total_volume_usdt": total_volume,
+            "account_type":      "demo",
+            "exchange":          "BloFin Demo",
+            "demo_start_usdt":   1000.0,
+            "balance":           round(balance, 2),
+            "peak_balance":      round(peak, 2),
+            "pnl_total_usdt":    pnl_total,
+            "pnl_total_pct":     round(pnl_total / 10, 2),
+            "total_orders":      total or (sp[0] or 0),
+            "winning_trades":    wins,
+            "win_rate_pct":      win_rate,
+            "total_volume_usdt": round(vol, 2),
             "signals_evaluated": sp[0] or 0,
-            "avg_pnl_1h_pct": round(sp[1] or 0, 3),
-            "win_rate_pct":   round(sp[2] or 0, 1),
-            "recent_orders":  recent,
+            "avg_pnl_1h_pct":    round(sp[1] or 0, 3),
+            "recent_orders":     recent,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/stream")
+async def sse_stream(token: str = Query(default="")):
+    """
+    Server-Sent Events endpoint — stuurt bot state elke 2 seconden.
+    Auth via ?token= query parameter (EventSource ondersteunt geen headers).
+    Alleen sturen als timestamp veranderd is.
+    """
+    # Auth check
+    if token != TOKEN:
+        conn = sqlite3.connect(DB_PATH)
+        ensure_auth_tables(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT expires_at FROM sessions WHERE token=?", (token,))
+        row = cur.fetchone()
+        conn.close()
+        if not row or datetime.fromisoformat(row[0]) <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    async def event_generator():
+        last_ts = None
+        while True:
+            try:
+                with open(STATE_PATH, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                ts = state.get("ts")
+                if ts != last_ts:
+                    last_ts = ts
+                    yield {"event": "state", "data": json.dumps(state)}
+            except FileNotFoundError:
+                yield {"event": "state", "data": "{}"}
+            except Exception as e:
+                yield {"event": "error", "data": str(e)}
+            await asyncio.sleep(2)
+
+    return EventSourceResponse(event_generator())

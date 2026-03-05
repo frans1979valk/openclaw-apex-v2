@@ -8,7 +8,9 @@ import pandas as pd
 import talib
 from typing import Dict, Optional
 
-def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 200) -> Optional[Dict[str, np.ndarray]]:
+TIMEFRAME_WEIGHTS = {"1h": 0.5, "4h": 0.35, "1d": 0.15}
+
+def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 300) -> Optional[Dict[str, np.ndarray]]:
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/klines",
@@ -27,6 +29,75 @@ def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 200) -> Optional
     except Exception as e:
         print(f"[indicators] OHLCV fout {symbol}: {e}")
         return None
+
+def calculate_multi(symbol: str, base_signal: str, base_rsi: float) -> Dict:
+    """
+    Multi-timeframe bevestiging: controleer 1h, 4h, 1d trend.
+    Geeft terug:
+      confirm_score  0-100  (hoe sterk hogere TF de entry bevestigen)
+      tf_bias        'bullish' | 'bearish' | 'neutral'
+      tf_detail      dict per timeframe
+    """
+    detail = {}
+    bull_score = 0.0
+    total_weight = 0.0
+
+    for tf, weight in TIMEFRAME_WEIGHTS.items():
+        ohlcv = fetch_ohlcv(symbol, tf, 120)
+        if ohlcv is None or len(ohlcv["close"]) < 50:
+            continue
+        c = ohlcv["close"]
+        h = ohlcv["high"]
+        l = ohlcv["low"]
+        try:
+            rsi_tf   = talib.RSI(c, 14)[-1]
+            ema21_tf = talib.EMA(c, 21)[-1]
+            ema55_tf = talib.EMA(c, 55)[-1]
+            macd_, _, hist_tf = talib.MACD(c, 12, 26, 9)
+            mh = hist_tf[-1]
+        except Exception:
+            continue
+        if any(np.isnan(x) for x in [rsi_tf, ema21_tf, ema55_tf, mh]):
+            continue
+
+        is_bull = (ema21_tf > ema55_tf) and (mh > 0) and (rsi_tf < 70)
+        is_bear = (ema21_tf < ema55_tf) and (mh < 0) and (rsi_tf > 30)
+
+        detail[tf] = {
+            "rsi":  round(float(rsi_tf), 1),
+            "ema_bull": bool(ema21_tf > ema55_tf),
+            "macd_bull": bool(mh > 0),
+            "bias": "bull" if is_bull else ("bear" if is_bear else "neutral"),
+        }
+        if is_bull:
+            bull_score += weight
+        elif not is_bear:
+            bull_score += weight * 0.5  # neutraal = half punten
+        total_weight += weight
+
+    if total_weight == 0:
+        return {"confirm_score": 50, "tf_bias": "neutral", "tf_detail": {}}
+
+    score = round(bull_score / total_weight * 100)
+    bias = "bullish" if score >= 60 else ("bearish" if score <= 40 else "neutral")
+
+    # Downgrade BUY-signaal als hogere TF bearish is
+    downgraded = False
+    if base_signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY") and bias == "bearish":
+        downgraded = True
+    # Upgrade als hogere TF super bullish
+    upgraded = False
+    if base_signal == "BUY" and bias == "bullish" and score >= 75 and base_rsi < 40:
+        upgraded = True
+
+    return {
+        "confirm_score": score,
+        "tf_bias":       bias,
+        "tf_detail":     detail,
+        "downgraded":    downgraded,
+        "upgraded":      upgraded,
+    }
+
 
 def calculate(symbol: str, interval: str = "5m") -> Optional[Dict]:
     ohlcv = fetch_ohlcv(symbol, interval)

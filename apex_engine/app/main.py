@@ -1,12 +1,14 @@
 import os, time
 from datetime import datetime, timezone
 from .core.state import write_state
-from .core.db import init_db, log_event, log_order, log_signal_entry, evaluate_open_signals, get_backtest_summaries
-from .exchanges.blofin_demo import BlofinDemoExecutor
+from .core.db import (init_db, log_event, log_order, log_signal_entry,
+                      evaluate_open_signals, get_backtest_summaries,
+                      log_market_context, demo_virtual_buy, demo_evaluate_trades)
+from .exchanges.blofin_demo import create_executor
 from .exchanges.binance_feed import BinanceFeed
 from .exchanges.bybit_feed import BybitFeed
 from .core.kimi_selector import select_best_coins
-from .core.indicators import calculate as calc_indicators
+from .core.indicators import calculate as calc_indicators, calculate_multi
 from .core.flash_crash import FlashCrashDetector
 from .core.agents import run_agent_workflow
 
@@ -18,7 +20,8 @@ KIMI_SCAN_INTERVAL = int(os.getenv("KIMI_SCAN_INTERVAL", "300"))
 AGENT_INTERVAL     = int(os.getenv("AGENT_INTERVAL", "1800"))
 TOP_N              = int(os.getenv("KIMI_TOP_N", "5"))
 INDICATOR_INTERVAL = os.getenv("INDICATOR_INTERVAL", "5m")
-ORDER_COOLDOWN     = int(os.getenv("ORDER_COOLDOWN", "120"))
+ORDER_COOLDOWN         = int(os.getenv("ORDER_COOLDOWN", "120"))
+SIGNAL_LOG_COOLDOWN    = int(os.getenv("SIGNAL_LOG_COOLDOWN", "900"))  # 15 minuten
 
 def guardrails():
     if TRADING_MODE != "demo":
@@ -32,7 +35,7 @@ def main():
     guardrails()
     db_path = "/var/apex/apex.db"
     init_db(db_path)
-    executor     = BlofinDemoExecutor(symbol=SYMBOL)
+    executor     = create_executor(symbol=SYMBOL)
     flash_detect = FlashCrashDetector()
     log_event(db_path, source="apex", level="info",
               title="Apex gestart (volledig + PerfectDay)", payload={"symbol": SYMBOL})
@@ -85,6 +88,15 @@ def main():
             active_signals = ind.get("active_signals", [])
             perfect_day    = ind.get("perfect_day", False)
 
+            # Multi-timeframe bevestiging (1h/4h/1d)
+            mtf = calculate_multi(sym, signal, ind.get("rsi") or 50)
+            if mtf["downgraded"] and signal not in ("HOLD", "DANGER"):
+                signal = "HOLD"   # hogere TF bearish → niet handelen
+                active_signals.append("⚠️MTF-Down")
+            elif mtf["upgraded"]:
+                signal = "MOMENTUM"
+                active_signals.append("⬆️MTF-Up")
+
             coin_states.append({
                 "symbol":         sym,
                 "price":          price,
@@ -103,15 +115,21 @@ def main():
                 "atr":            ind.get("atr"),
                 "danger":         ind.get("danger", False),
                 "flash_crash":    flash_triggered,
+                "tf_confirm":     mtf.get("confirm_score"),
+                "tf_bias":        mtf.get("tf_bias"),
+                "tf_detail":      mtf.get("tf_detail", {}),
             })
 
             # Signal performance logging — max 1x per 15 min per (coin+signaal)
-            SIGNAL_LOG_COOLDOWN = 900  # 15 minuten
             sig_key = (sym, signal)
             if signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY") and price \
                and (now - last_signal_log.get(sig_key, 0)) > SIGNAL_LOG_COOLDOWN:
                 log_signal_entry(db_path, symbol=sym, signal=signal,
                                  entry_price=price, active_signals=active_signals)
+                log_market_context(db_path, symbol=sym, signal=signal, entry_price=price,
+                                   rsi_5m=ind.get("rsi"), tf_confirm_score=mtf.get("confirm_score"),
+                                   tf_bias=mtf.get("tf_bias"), tf_detail=mtf.get("tf_detail", {}))
+                demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
                 last_signal_log[sig_key] = now
 
             # Order logica — Perfect Day = dubbele size
@@ -132,8 +150,9 @@ def main():
                     log_event(db_path, source="apex", level="error",
                               title=f"Order fout {sym}", payload={"error": str(e)})
 
-            # Evalueer eerdere open signalen (terugkijken wat er happened is)
+            # Evalueer eerdere open signalen + demo trades
             evaluate_open_signals(db_path, sym, price)
+            demo_evaluate_trades(db_path, sym, price)
 
         # Agent workflow
         if coin_states and (now - last_agent_run) > AGENT_INTERVAL:

@@ -40,6 +40,45 @@ def init_db(path: str) -> None:
         pnl_4h_pct  REAL,
         status TEXT DEFAULT 'open'
     )""")
+    # Market context memory — opslaan van multi-TF context per signaal
+    cur.execute("""CREATE TABLE IF NOT EXISTS market_context(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        signal TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        rsi_5m REAL,
+        tf_confirm_score INTEGER,
+        tf_bias TEXT,
+        tf_1h_rsi REAL,
+        tf_4h_rsi REAL,
+        outcome_1h_pct REAL,
+        outcome_4h_pct REAL,
+        status TEXT DEFAULT 'open'
+    )""")
+    # Demo account tracking — virtuele $1000 rekening
+    cur.execute("""CREATE TABLE IF NOT EXISTS demo_account(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        action TEXT NOT NULL,
+        price REAL NOT NULL,
+        virtual_size_usdt REAL NOT NULL,
+        virtual_pnl_usdt REAL DEFAULT 0,
+        balance_after REAL NOT NULL,
+        signal TEXT,
+        note TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS demo_balance(
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        balance REAL NOT NULL DEFAULT 1000.0,
+        peak_balance REAL NOT NULL DEFAULT 1000.0,
+        total_trades INTEGER DEFAULT 0,
+        winning_trades INTEGER DEFAULT 0,
+        total_volume_usdt REAL DEFAULT 0
+    )""")
+    # Zorg dat er altijd 1 record is
+    cur.execute("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
     conn.commit()
     conn.close()
 
@@ -126,6 +165,142 @@ def evaluate_open_signals(db_path: str, symbol: str, current_price: float) -> No
             )
     conn.commit()
     conn.close()
+
+def log_market_context(db_path: str, symbol: str, signal: str, entry_price: float,
+                       rsi_5m: float = None, tf_confirm_score: int = None,
+                       tf_bias: str = None, tf_detail: dict = None) -> None:
+    """Sla market context op voor het learning geheugen."""
+    conn = sqlite3.connect(db_path)
+    ts = datetime.now(timezone.utc).isoformat()
+    tf = tf_detail or {}
+    rsi_1h = tf.get("1h", {}).get("rsi")
+    rsi_4h = tf.get("4h", {}).get("rsi")
+    conn.execute(
+        """INSERT INTO market_context
+           (ts, symbol, signal, entry_price, rsi_5m, tf_confirm_score, tf_bias, tf_1h_rsi, tf_4h_rsi)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ts, symbol, signal, entry_price, rsi_5m, tf_confirm_score, tf_bias, rsi_1h, rsi_4h)
+    )
+    conn.commit()
+    conn.close()
+
+
+DEMO_TRADE_SIZE_PCT = 0.05   # 5% van balans per trade (max $50)
+DEMO_MAX_TRADE_USDT = 50.0
+
+def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> None:
+    """Registreer een virtuele koop in de demo rekening."""
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM demo_balance WHERE id=1")
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return
+    balance = row[0]
+    size_usdt = min(DEMO_MAX_TRADE_USDT, balance * DEMO_TRADE_SIZE_PCT)
+    if size_usdt < 1.0:
+        conn.close()
+        return
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
+           virtual_pnl_usdt, balance_after, signal, note)
+           VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?)""",
+        (ts, symbol, price, size_usdt, balance, signal, f"Auto-buy op {signal}")
+    )
+    conn.execute(
+        "UPDATE demo_balance SET total_trades=total_trades+1, total_volume_usdt=total_volume_usdt+? WHERE id=1",
+        (size_usdt,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def demo_evaluate_trades(db_path: str, symbol: str, current_price: float) -> None:
+    """Evalueer open demo trades en bereken P&L."""
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc)
+    cur.execute(
+        "SELECT id, ts, price, virtual_size_usdt FROM demo_account "
+        "WHERE symbol=? AND action='buy' AND virtual_pnl_usdt=0",
+        (symbol,)
+    )
+    rows = cur.fetchall()
+    for row in rows:
+        tid, ts_str, buy_price, size_usdt = row
+        try:
+            age = now - datetime.fromisoformat(ts_str)
+        except Exception:
+            continue
+        # Sluit positie na 1 uur (simulatie)
+        if age.total_seconds() >= 3600 and buy_price and current_price:
+            pnl_pct = (current_price / buy_price - 1)
+            pnl_usdt = round(size_usdt * pnl_pct, 4)
+            conn.execute(
+                "UPDATE demo_account SET virtual_pnl_usdt=? WHERE id=?",
+                (pnl_usdt, tid)
+            )
+            # Update balans en stats
+            if pnl_usdt > 0:
+                conn.execute(
+                    "UPDATE demo_balance SET balance=balance+?, peak_balance=MAX(peak_balance, balance+?), "
+                    "winning_trades=winning_trades+1 WHERE id=1",
+                    (pnl_usdt, pnl_usdt)
+                )
+            else:
+                conn.execute(
+                    "UPDATE demo_balance SET balance=balance+? WHERE id=1",
+                    (pnl_usdt,)
+                )
+    conn.commit()
+    conn.close()
+
+
+def get_demo_stats(db_path: str) -> dict:
+    """Haal demo account statistieken op."""
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT balance, peak_balance, total_trades, winning_trades, total_volume_usdt FROM demo_balance WHERE id=1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return {}
+        balance, peak, total, wins, vol = row
+
+        # Recente trades
+        cur.execute("""
+            SELECT ts, symbol, action, price, virtual_size_usdt, virtual_pnl_usdt, signal
+            FROM demo_account ORDER BY id DESC LIMIT 10
+        """)
+        trades = cur.fetchall()
+        conn.close()
+
+        win_rate = round(wins / total * 100, 1) if total > 0 else 0
+        pnl_total = round(balance - 1000.0, 2)
+        return {
+            "demo_start_usdt":    1000.0,
+            "balance":            round(balance, 2),
+            "peak_balance":       round(peak, 2),
+            "pnl_total_usdt":     pnl_total,
+            "pnl_total_pct":      round(pnl_total / 10, 2),  # % van $1000
+            "total_orders":       total,
+            "winning_trades":     wins,
+            "win_rate_pct":       win_rate,
+            "total_volume_usdt":  round(vol, 2),
+            "avg_pnl_1h_pct":     0,  # wordt gevuld via signal_performance
+            "signals_evaluated":  total,
+            "recent_orders": [{
+                "ts": t[0], "symbol": t[1], "side": t[2],
+                "price": t[3], "size": round(t[4] / t[3], 6) if t[3] else 0,
+                "pnl_usdt": t[5], "signal": t[6],
+            } for t in trades],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 
 def get_backtest_summaries(db_path: str, symbols: List[str]) -> dict:
     """
