@@ -335,6 +335,7 @@ def autonomous_decision_loop() -> None:
     2. ClawBot (Claude Sonnet) reviewt → strategische laag
     3. Hoog-urgente beslissingen vragen gebruiker via countdown
     """
+    global _auto_decision_count_today
     _reset_daily_decisions()
     if _auto_decision_count_today >= MAX_AUTO_DECISIONS_PER_DAY:
         return
@@ -435,7 +436,6 @@ def autonomous_decision_loop() -> None:
     confidence = final_decision.get("confidence_pct", 0)
     urgentie   = final_decision.get("urgentie", "LOW")
 
-    global _auto_decision_count_today
     _auto_decision_count_today += 1
 
     log.info(f"Finale beslissing: {actie} | {coin} | confidence={confidence}% | "

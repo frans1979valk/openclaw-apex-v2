@@ -38,8 +38,27 @@ def ask_kimi(question: str, context: str = "") -> str:
     try:
         client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL)
         system = (
-            "Je bent een behulpzame crypto trading assistent van het OpenClaw platform. "
-            "Antwoord altijd in het Nederlands. Wees kort en concreet (max 200 woorden). "
+            "Je bent Kimi, de AI-assistent van het OpenClaw crypto trading platform. "
+            "Je praat met de eigenaar/trader van het platform via Telegram. "
+            "Antwoord altijd in het Nederlands. Wees kort en concreet (max 200 woorden).\n\n"
+            "JOUW ROL EN BEVOEGDHEDEN:\n"
+            "- Je analyseert de markt en geeft concrete handelingsadviezen\n"
+            "- Je MAG en MOET acties aanbevelen op basis van marktdata\n"
+            "- De apex_engine voert automatisch trades uit op BloFin (demo modus)\n"
+            "- De eigenaar kan via jou de engine sturen met commando's\n\n"
+            "BESCHIKBARE COMMANDO'S die de eigenaar kan gebruiken:\n"
+            "- /stop — NOODSTOP, alle trading stopt onmiddellijk\n"
+            "- /start — hervat trading na stop of pauze\n"
+            "- /pauzeer [minuten] — pauzeer trading tijdelijk\n"
+            "- /status — bekijk alle actieve coins en signalen\n"
+            "- /coins — bekijk Kimi's coin selectie\n"
+            "- /balance — bekijk account balans en P&L\n"
+            "- /backtest [SYMBOL] — backtest een strategie\n"
+            "- /ok <id> — keur een wachtend voorstel goed\n"
+            "- /skip <id> — sla een voorstel over\n\n"
+            "Als je een BUY/SELL kans ziet, zeg dat dan DIRECT en verwijs naar /status voor actuele info. "
+            "Zeg NOOIT dat je geen handelingen kunt uitvoeren — de engine doet dit automatisch, "
+            "en jij kunt de eigenaar adviseren om commando's te geven. "
             "Gebruik de marktcontext als die beschikbaar is."
         )
         user_msg = question
@@ -215,6 +234,151 @@ def cmd_zoek(chat_id, query: str):
         antwoord = web_result
     send_message(chat_id, f"🔍 *{query}*\n\n{antwoord}")
 
+def cmd_clawbot(chat_id, args: str):
+    """
+    /clawbot          — toon huidige model instelling
+    /clawbot sonnet   — upgrade naar Claude Sonnet 4.6 (premium)
+    /clawbot haiku    — terug naar Claude Haiku (standaard/goedkoop)
+    """
+    arg = args.strip().lower()
+
+    if not arg:
+        # Toon huidige status
+        try:
+            r = requests.get(f"{CONTROL_API_URL}/clawbot/model", headers=api_headers(), timeout=5)
+            d = r.json()
+            model   = d.get("model", "?")
+            premium = d.get("is_premium", False)
+            icon    = "💎" if premium else "✅"
+            send_message(chat_id,
+                f"🤖 *ClawBot Model Status*\n\n"
+                f"{icon} Huidig model: `{model}`\n\n"
+                f"{'⚠️ PREMIUM actief — tokens worden verbruikt!' if premium else '✅ Standaard Haiku — zuinig modus'}\n\n"
+                f"Commando's:\n"
+                f"/clawbot sonnet — upgrade naar Sonnet 4.6\n"
+                f"/clawbot haiku  — terug naar Haiku (standaard)"
+            )
+        except Exception as e:
+            send_message(chat_id, f"❌ ClawBot status fout: {e}")
+
+    elif arg == "sonnet":
+        try:
+            r = requests.post(
+                f"{CONTROL_API_URL}/clawbot/model",
+                headers=api_headers(),
+                json={"model": "sonnet"},
+                timeout=5
+            )
+            if r.status_code == 200:
+                send_message(chat_id,
+                    "💎 *ClawBot → Sonnet 4.6 geactiveerd*\n\n"
+                    "Claude Sonnet 4.6 wordt nu gebruikt voor strategische beslissingen.\n"
+                    "⚠️ Dit verbruikt meer tokens.\n\n"
+                    "Gebruik /clawbot haiku om terug te schakelen."
+                )
+            else:
+                send_message(chat_id, f"❌ Fout: {r.text}")
+        except Exception as e:
+            send_message(chat_id, f"❌ Fout: {e}")
+
+    elif arg == "haiku":
+        try:
+            r = requests.post(
+                f"{CONTROL_API_URL}/clawbot/model",
+                headers=api_headers(),
+                json={"model": "haiku"},
+                timeout=5
+            )
+            if r.status_code == 200:
+                send_message(chat_id,
+                    "✅ *ClawBot → Haiku (standaard) geactiveerd*\n\n"
+                    "Terug naar zuinige modus. Haiku handelt dagelijkse beslissingen af."
+                )
+            else:
+                send_message(chat_id, f"❌ Fout: {r.text}")
+        except Exception as e:
+            send_message(chat_id, f"❌ Fout: {e}")
+
+    else:
+        send_message(chat_id,
+            "❓ Onbekend commando.\n\n"
+            "/clawbot          — toon status\n"
+            "/clawbot sonnet   — upgrade naar Sonnet 4.6\n"
+            "/clawbot haiku    — terug naar Haiku"
+        )
+
+
+def cmd_coingoedkeuren(chat_id, args: str):
+    """
+    /coingoedkeuren              — toon wachtende nieuwe coins
+    /coingoedkeuren ja SYMBOL    — keur coin goed voor trading
+    /coingoedkeuren nee SYMBOL   — wijs coin af
+    """
+    parts = args.strip().split()
+    if not parts:
+        # Toon wachtende coins
+        try:
+            r = requests.get(f"{CONTROL_API_URL}/coins/approved", headers=api_headers(), timeout=5)
+            d = r.json()
+            pending  = d.get("pending",  [])
+            approved = d.get("approved", [])
+            rejected = d.get("rejected", [])
+            lines = ["🪙 *Coin Goedkeuring Overzicht*\n"]
+            if pending:
+                lines.append(f"⏳ *Wachtend ({len(pending)}):*")
+                for s in pending:
+                    lines.append(f"  • {s}")
+                lines.append("\nGebruik /coingoedkeuren ja SYMBOL om goed te keuren.")
+            else:
+                lines.append("✅ Geen wachtende coins.")
+            if approved:
+                lines.append(f"\n🟢 *Goedgekeurd ({len(approved)}):*")
+                lines.append(", ".join(approved))
+            if rejected:
+                lines.append(f"\n🔴 *Afgewezen ({len(rejected)}):*")
+                lines.append(", ".join(rejected))
+            send_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            send_message(chat_id, f"❌ Fout bij ophalen coins: {e}")
+        return
+
+    if len(parts) < 2:
+        send_message(chat_id, "Gebruik: /coingoedkeuren ja SYMBOL  of  /coingoedkeuren nee SYMBOL")
+        return
+
+    actie  = parts[0].lower()
+    symbol = parts[1].upper()
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
+    if actie in ("ja", "yes", "approve"):
+        action = "approve"
+        label  = "✅ GOEDGEKEURD"
+    elif actie in ("nee", "no", "reject", "afwijzen"):
+        action = "reject"
+        label  = "🔴 AFGEWEZEN"
+    else:
+        send_message(chat_id, "Gebruik 'ja' of 'nee': /coingoedkeuren ja BTCUSDT")
+        return
+
+    try:
+        r = requests.post(
+            f"{CONTROL_API_URL}/coins/approved",
+            headers=api_headers(),
+            json={"symbol": symbol, "action": action},
+            timeout=5
+        )
+        if r.status_code == 200:
+            send_message(chat_id,
+                f"🪙 *{symbol}* — {label}\n\n"
+                f"{'De coin wordt nu meegenomen in Kimis selectie.' if action == 'approve' else 'De coin wordt niet meer gesuggereerd.'}"
+            )
+        else:
+            send_message(chat_id, f"❌ Fout: {r.text}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Fout: {e}")
+
+
 def cmd_noodstop(chat_id):
     """NOODSTOP — staak alle trading onmiddellijk."""
     try:
@@ -347,6 +511,14 @@ def cmd_help(chat_id):
         "/pauzeer [minuten] — pauze (standaard 30 min)\n"
         "/ok <q_id> — bevestig ClawBot vraag\n"
         "/skip <q_id> — sla ClawBot vraag over\n\n"
+        "🤖 *ClawBot (Claude AI):*\n"
+        "/clawbot — toon model status\n"
+        "/clawbot sonnet — upgrade naar Sonnet 4.6\n"
+        "/clawbot haiku  — terug naar Haiku (standaard)\n\n"
+        "🪙 *Coin Goedkeuring:*\n"
+        "/coingoedkeuren — toon wachtende nieuwe coins\n"
+        "/coingoedkeuren ja SYMBOL — keur coin goed\n"
+        "/coingoedkeuren nee SYMBOL — wijs coin af\n\n"
         "/help — dit menu\n\n"
         "💬 _Of stel gewoon een vraag over de markt!_"
     )
@@ -380,6 +552,10 @@ def handle(chat_id: str, user_id: str, text: str):
         cmd_skip(chat_id, text)
     elif text.startswith("/tradingstatus"):
         cmd_tradingstatus(chat_id)
+    elif text.startswith("/clawbot"):
+        cmd_clawbot(chat_id, text[8:].strip())
+    elif text.startswith("/coingoedkeuren"):
+        cmd_coingoedkeuren(chat_id, text[15:].strip())
     elif text.startswith("/propose"):
         payload = {"agent": "DiscussBot", "params": {"note": "manual"}, "reason": "handmatig"}
         r = requests.post(f"{CONTROL_API_URL}/config/propose", headers=api_headers(), json=payload, timeout=5)

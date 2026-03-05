@@ -16,6 +16,7 @@ from .core.news_monitor import NewsMonitor
 from .core.pre_crash_detector import PreCrashDetector
 from .core.btc_cascade import BtcCascadeDetector
 from .core.exchange_intel import ExchangeIntel
+from .core.data_logger import DataLogger
 
 SYMBOL             = os.getenv("SYMBOL", "XRP-USDT")
 TRADING_MODE       = os.getenv("TRADING_MODE", "demo").lower()
@@ -75,9 +76,10 @@ def main():
     pre_crash       = PreCrashDetector()
     btc_cascade     = BtcCascadeDetector()
     exchange_intel  = ExchangeIntel(cache_ttl=30)
+    data_logger     = DataLogger(db_path)
 
     log_event(db_path, source="apex", level="info",
-              title="Apex gestart (volledig + PerfectDay + STAP15-17)",
+              title="Apex gestart (volledig + PerfectDay + STAP15-17 + DataLogger)",
               payload={"symbol": SYMBOL})
 
     tracked_coins     = []
@@ -88,13 +90,19 @@ def main():
     last_agent_result = {}
     last_pre_crash    = {}   # sym → laatste score
 
-    # BTC Cascade handler — logt event naar DB
+    # BTC Cascade handler — logt event naar DB én DataLogger
     def _on_cascade(coins, btc_drop_pct, urgentie, btc_price=0):
         syms = [c["symbol"] for c in coins]
         print(f"[cascade] BTC drop {btc_drop_pct:.1f}% → CASCADE SHORT: {syms} | urgentie={urgentie}")
         log_event(db_path, source="cascade", level="warning",
                   title=f"BTC Cascade SHORT gedetecteerd ({btc_drop_pct:.1f}%)",
                   payload={"coins": syms, "urgentie": urgentie, "btc_price": btc_price})
+        data_logger.log_market_event(
+            "BTC_CASCADE", symbol="BTCUSDT", severity=urgentie,
+            value=round(btc_drop_pct, 2),
+            description=f"BTC drop {btc_drop_pct:.2f}% → cascade naar {syms}",
+            payload={"coins": coins, "btc_price": btc_price},
+        )
 
     btc_cascade.on_cascade(_on_cascade)
 
@@ -179,11 +187,11 @@ def main():
                 active_signals.append(f"⚠️PreCrash({crash_score:.0f})")
 
             # Multi-timeframe bevestiging (1h/4h/1d)
-            mtf = calculate_multi(sym, signal, ind.get("rsi") or 50)
-            if mtf["downgraded"] and signal not in ("HOLD", "DANGER"):
+            mtf = calculate_multi(sym, signal, ind.get("rsi") or 50) or {}
+            if mtf.get("downgraded") and signal not in ("HOLD", "DANGER"):
                 signal = "HOLD"
                 active_signals.append("⚠️MTF-Down")
-            elif mtf["upgraded"] and signal not in ("DANGER",):
+            elif mtf.get("upgraded") and signal not in ("DANGER",):
                 signal = "MOMENTUM"
                 active_signals.append("⬆️MTF-Up")
 
@@ -262,6 +270,48 @@ def main():
 
             evaluate_open_signals(db_path, sym, price)
             demo_evaluate_trades(db_path, sym, price)
+
+            # ── DataLogger: historische opslag voor AI-geheugen ──────────
+            data_logger.maybe_log_snapshot(
+                symbol=sym, price=price,
+                rsi=ind.get("rsi"), volume_usdt=vol,
+                signal=signal, change_pct=coin.get("change_pct", 0.0),
+                atr=ind.get("atr"), tf_bias=mtf.get("tf_bias"),
+            )
+            data_logger.maybe_log_crash_score(
+                symbol=sym, score=crash_score,
+            )
+            if EXCHANGE_INTEL_ENABLED and "BTC" in sym and ex_consensus:
+                data_logger.maybe_log_exchange_consensus(
+                    symbol=sym, consensus=ex_consensus,
+                    prices={},  # exchange_intel cache niet direct toegankelijk
+                    coinbase_lead=ex_coinbase_lead,
+                )
+
+            # Log marktgebeurtenissen meteen
+            if flash_triggered:
+                data_logger.log_market_event(
+                    "FLASH_CRASH", symbol=sym, severity="HIGH",
+                    value=price, description=f"Flash crash gedetecteerd op {sym}",
+                )
+            if crash_score >= 80 and last_pre_crash.get(sym, 0) < 80:
+                data_logger.log_market_event(
+                    "PRE_CRASH_CRITICAL", symbol=sym, severity="CRITICAL",
+                    value=crash_score,
+                    description=f"Pre-crash score KRITIEK: {crash_score:.0f}/100",
+                )
+            elif crash_score >= 60 and last_pre_crash.get(sym, 0) < 60:
+                data_logger.log_market_event(
+                    "PRE_CRASH_WARNING", symbol=sym, severity="HIGH",
+                    value=crash_score,
+                    description=f"Pre-crash score waarschuwing: {crash_score:.0f}/100",
+                )
+            if ex_coinbase_lead:
+                data_logger.log_market_event(
+                    "COINBASE_LEAD", symbol=sym, severity="MEDIUM",
+                    value=round(ex_consensus, 4),
+                    description=f"Coinbase wijkt significant af van consensus",
+                )
 
         # Agent workflow
         if coin_states and (now - last_agent_run) > AGENT_INTERVAL:

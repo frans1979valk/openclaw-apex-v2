@@ -86,6 +86,23 @@
   /* ── Pre-crash score balk ── */
   .crash-bar { height: 3px; border-radius: 2px; margin-top: 4px; transition: width .5s; }
   .crash-score-label { font-size: .65rem; color: #8b949e; }
+
+  /* ── Exchange vergelijking tabel ── */
+  .exch-table { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 8px; }
+  .exch-table th { color: #8b949e; font-weight: 600; text-align: right; padding: 4px 8px;
+                   border-bottom: 1px solid #30363d; font-size: .72rem; }
+  .exch-table th:first-child { text-align: left; }
+  .exch-table td { padding: 7px 8px; border-bottom: 1px solid #21262d; text-align: right;
+                   font-variant-numeric: tabular-nums; }
+  .exch-table td:first-child { text-align: left; font-weight: 600; }
+  .exch-table tr:last-child td { border-bottom: none; }
+  .exch-consensus { background: #0d1117; border-radius: 6px; padding: 8px 12px; margin-top: 10px;
+                    font-size: .82rem; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .exch-sym-btn { background: #21262d; color: #8b949e; border: 1px solid #30363d;
+                  border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: .75rem;
+                  transition: all .15s; }
+  .exch-sym-btn:hover { background: #2d333b; color: #c9d1d9; }
+  .exch-sym-btn.active { background: #1f4068; color: #58a6ff; border-color: #1158a7; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -591,6 +608,109 @@ function extendTicker(coins) {
   }
 }
 
+// ── Multi-Exchange Vergelijking (via backend proxy — geen CORS issues) ─────
+const EXCH_WEIGHTS = { coinbase:0.35, binance:0.25, bybit:0.20, okx:0.12, kraken:0.08 };
+const EXCH_ORDER   = ["coinbase","binance","bybit","okx","kraken","blofin"];
+const EXCH_LABELS  = {
+  coinbase:"Coinbase ⭐", binance:"Binance", bybit:"Bybit",
+  okx:"OKX", kraken:"Kraken", blofin:"BloFin 🏠"
+};
+let _exchSym      = "XRPUSDT";
+let _exchPrices   = {};
+let _exchConsensus = null;
+let _exchInterval = null;
+
+async function fetchAllExchangePrices(sym) {
+  // Backend proxy: control_api haalt alles op — BloFin, Coinbase, etc. zonder CORS
+  const r = await fetch(`${API}/market/prices/${sym}`, {headers: H, cache:"no-store"});
+  if (!r.ok) throw new Error(`prices ${r.status}`);
+  return await r.json();  // { symbol, prices:{...}, consensus, ts }
+}
+
+function calcExchConsensus(prices) {
+  let wSum = 0, wTotal = 0;
+  for (const [ex, w] of Object.entries(EXCH_WEIGHTS)) {
+    if (prices[ex] != null) { wSum += prices[ex] * w; wTotal += w; }
+  }
+  return wTotal > 0 ? wSum / wTotal : null;
+}
+
+function renderExchangeCard() {
+  const el = document.getElementById("exch-card-body");
+  if (!el) return;
+  const prices    = _exchPrices;           // { coinbase:1.23, binance:..., blofin:... }
+  const consensus = _exchConsensus;        // van backend (gewogen) of lokaal berekend
+  const base = _exchSym.replace("USDT","");
+  const dec = (consensus||0) >= 1000 ? 2 : (consensus||0) >= 1 ? 4 : 6;
+  const onlineCount = EXCH_ORDER.filter(k => prices[k] != null).length;
+
+  if (!onlineCount) {
+    el.innerHTML = "<p style='color:#8b949e;font-size:.82rem'>Laden prijzen...</p>";
+    return;
+  }
+
+  const rows = EXCH_ORDER.map(ex => {
+    const p = prices[ex];
+    if (p == null) return `
+      <tr><td style="color:#8b949e">${EXCH_LABELS[ex]}</td>
+          <td colspan="2" style="color:#8b949e;text-align:center">— offline —</td></tr>`;
+    const diff = consensus ? (p - consensus) / consensus * 100 : 0;
+    const diffClr = Math.abs(diff) < 0.05 ? "#8b949e" : diff > 0 ? "#3fb950" : "#f85149";
+    const diffStr = `${diff >= 0 ? "+" : ""}${diff.toFixed(3)}%`;
+    const rowStyle = ex==="coinbase" ? " style='background:#0d1a2b'"
+                   : ex==="blofin"   ? " style='background:#0a1a0a'" : "";
+    const nameStyle = ex==="coinbase" ? "color:#58a6ff" : ex==="blofin" ? "color:#3fb950" : "";
+    return `<tr${rowStyle}>
+      <td style="${nameStyle}">${EXCH_LABELS[ex]}</td>
+      <td>$${p.toLocaleString("en-US",{minimumFractionDigits:dec,maximumFractionDigits:dec})}</td>
+      <td style="color:${diffClr};font-size:.78rem">${diffStr}</td>
+    </tr>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div style="font-size:.72rem;color:#8b949e;margin-bottom:8px">
+      ${base}/USDT &mdash; gewogen consensus (Coinbase 35% gewicht) &mdash; BloFin is jouw handelsplatform
+    </div>
+    <table class="exch-table">
+      <thead><tr><th>Exchange</th><th>Prijs</th><th>vs Consensus</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${consensus != null ? `<div class="exch-consensus">
+      <span style="color:#8b949e">Gewogen consensus:</span>
+      <span style="font-weight:700;color:#e6edf3;font-size:1rem">
+        $${consensus.toLocaleString("en-US",{minimumFractionDigits:dec,maximumFractionDigits:dec})}
+      </span>
+      <span style="color:#8b949e;font-size:.72rem">${onlineCount}/6 online</span>
+      <span style="color:#8b949e;font-size:.68rem;margin-left:auto">
+        ${new Date().toLocaleTimeString("nl-NL")}
+      </span>
+    </div>` : ""}`;
+}
+
+async function updateExchangeCard() {
+  try {
+    const d = await fetchAllExchangePrices(_exchSym);
+    _exchPrices   = d.prices || {};
+    _exchConsensus = d.consensus || calcExchConsensus(_exchPrices);
+    renderExchangeCard();
+  } catch(e) {
+    const el = document.getElementById("exch-card-body");
+    if (el) el.innerHTML = `<p style='color:#f85149;font-size:.8rem'>⚠️ Fout: ${e.message}</p>`;
+  }
+}
+
+function switchExchSym(sym, btn) {
+  _exchSym = sym;
+  document.querySelectorAll(".exch-sym-btn").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  updateExchangeCard();
+}
+
+function startExchangeComparison() {
+  updateExchangeCard();
+  _exchInterval = setInterval(updateExchangeCard, 15000);
+}
+
 // ── SSE + render ──────────────────────────────────────────────────────────
 let _sseSource   = null;
 let _sseRetry    = null;
@@ -637,6 +757,17 @@ async function renderFromState(state) {
         <div class="card" style="grid-column: span 2">
           <h2>📊 Coin Overzicht — ${ts} UTC</h2>
           ${safeRender(() => renderCoins(state.coins))}
+        </div>
+        <div class="card" style="grid-column: span 2">
+          <h2>🏦 Exchange Vergelijking — Live Prijs per Exchange</h2>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+            <button class="exch-sym-btn active" onclick="switchExchSym('XRPUSDT',this)">XRP</button>
+            <button class="exch-sym-btn" onclick="switchExchSym('BTCUSDT',this)">BTC</button>
+            <button class="exch-sym-btn" onclick="switchExchSym('ETHUSDT',this)">ETH</button>
+            <button class="exch-sym-btn" onclick="switchExchSym('SOLUSDT',this)">SOL</button>
+            <button class="exch-sym-btn" onclick="switchExchSym('BNBUSDT',this)">BNB</button>
+          </div>
+          <div id="exch-card-body"><p style='color:#8b949e;font-size:.82rem'>Laden...</p></div>
         </div>
         <div class="card">
           <h2>⚙️ Systeem</h2>
@@ -774,6 +905,9 @@ function connectSSE() {
 
 // Start live ticker meteen
 startLiveTicker();
+
+// Start exchange vergelijking (elke 15 sec)
+startExchangeComparison();
 
 // Start: initiële render via REST, dan overschakelen op SSE
 (async () => {

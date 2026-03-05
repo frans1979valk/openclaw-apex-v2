@@ -79,6 +79,66 @@ def init_db(path: str) -> None:
     )""")
     # Zorg dat er altijd 1 record is
     cur.execute("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
+
+    # ── Historische data voor AI-geheugen ─────────────────────────────────
+    # Prijs snapshots: elke 5 min per coin opgeslagen
+    cur.execute("""CREATE TABLE IF NOT EXISTS price_snapshots(
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts      TEXT NOT NULL,
+        symbol  TEXT NOT NULL,
+        price   REAL NOT NULL,
+        rsi     REAL,
+        volume_usdt REAL,
+        signal  TEXT,
+        change_pct REAL,
+        atr     REAL,
+        tf_bias TEXT
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ps_sym_ts ON price_snapshots(symbol, ts)")
+
+    # Pre-crash score geschiedenis: wanneer was het gevaarlijk?
+    cur.execute("""CREATE TABLE IF NOT EXISTS crash_score_log(
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts      TEXT NOT NULL,
+        symbol  TEXT NOT NULL,
+        score   REAL NOT NULL,
+        ob_pct  REAL,
+        vol_pct REAL,
+        rsi_pct REAL,
+        mom_pct REAL
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_csl_sym_ts ON crash_score_log(symbol, ts)")
+
+    # Exchange consensus geschiedenis: prijsvergelijking over tijd
+    cur.execute("""CREATE TABLE IF NOT EXISTS exchange_consensus_log(
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts              TEXT NOT NULL,
+        symbol          TEXT NOT NULL,
+        consensus       REAL,
+        coinbase_price  REAL,
+        binance_price   REAL,
+        bybit_price     REAL,
+        okx_price       REAL,
+        kraken_price    REAL,
+        blofin_price    REAL,
+        divergence_pct  REAL,
+        coinbase_lead   INTEGER DEFAULT 0
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ecl_sym_ts ON exchange_consensus_log(symbol, ts)")
+
+    # Marktgebeurtenissen: BTC cascades, flash crashes, news alerts
+    cur.execute("""CREATE TABLE IF NOT EXISTS market_events(
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts          TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        symbol      TEXT,
+        severity    TEXT,
+        value       REAL,
+        description TEXT,
+        payload_json TEXT
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_me_ts ON market_events(ts)")
+
     conn.commit()
     conn.close()
 

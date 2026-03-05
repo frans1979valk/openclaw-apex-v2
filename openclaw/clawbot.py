@@ -1,8 +1,10 @@
 """
-ClawBot — Claude Sonnet als strategische AI boven Kimi K2.5.
+ClawBot — Claude als strategische AI boven Kimi K2.5.
 
-Reviewt Kimi's analyse + live performance data en geeft een definitieve
-strategische beslissing voor het OpenClaw platform.
+Token-zuinig beleid (ingesteld door eigenaar):
+  - Standaard: claude-haiku-4-5-20251001 (snel & goedkoop)
+  - claude-sonnet-4-6 alleen bij échte problemen (CRITICAL urgentie)
+    én uitsluitend na overleg met de eigenaar via Telegram
 
 IJZEREN WET: Koop NOOIT tijdens een crash. SHORT is de enige juiste actie.
 """
@@ -12,7 +14,12 @@ from typing import Optional
 log = logging.getLogger("clawbot")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+
+# Standaard: Haiku — snel en goedkoop
+# Sonnet 4.6 alleen als de eigenaar expliciet toestemming geeft via CLAUDE_MODEL env var
+CLAUDE_MODEL_DEFAULT  = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL_PREMIUM  = "claude-sonnet-4-6"
+CLAUDE_MODEL          = os.getenv("CLAUDE_MODEL", CLAUDE_MODEL_DEFAULT)
 
 CLAWBOT_SYSTEM = """Je bent ClawBot, de strategische AI van het OpenClaw crypto trading platform.
 Je werkt als tweede laag boven Kimi K2.5. Je krijgt Kimi's analyse, live marktdata en historische performance.

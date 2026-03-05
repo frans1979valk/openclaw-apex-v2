@@ -687,6 +687,31 @@ HALT_FILE = "/var/apex/trading_halt.json"
 _trading_halt: dict = {"halted": False, "paused_until": None, "reason": ""}
 _pending_answers: dict = {}   # q_id → antwoord
 
+# ClawBot model instelling (in-memory, geset via Telegram /clawbot commando)
+_clawbot_model: str = "claude-haiku-4-5-20251001"   # standaard = Haiku (goedkoop)
+
+# Goedgekeurde nieuwe coins (buiten de vaste whitelist)
+# Persistent in JSON bestand, beheerd via Telegram /coingoedkeuren
+APPROVED_COINS_FILE = "/var/apex/approved_coins.json"
+
+def _load_approved_coins() -> dict:
+    try:
+        with open(APPROVED_COINS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"approved": [], "pending": [], "rejected": []}
+    except Exception:
+        return {"approved": [], "pending": [], "rejected": []}
+
+def _save_approved_coins(data: dict):
+    try:
+        with open(APPROVED_COINS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+_approved_coins = _load_approved_coins()
+
 
 def _write_halt_file():
     try:
@@ -769,6 +794,321 @@ def get_trading_answer(
     auth(x_api_key)
     antwoord = _pending_answers.pop(q_id, None)
     return {"q_id": q_id, "antwoord": antwoord}
+
+
+# ── Exchange prijzen proxy (CORS-safe voor dashboard) ─────────────────────
+BLOFIN_API_KEY        = os.getenv("BLOFIN_API_KEY", "")
+BLOFIN_API_SECRET     = os.getenv("BLOFIN_API_SECRET", "")
+BLOFIN_API_PASSPHRASE = os.getenv("BLOFIN_API_PASSPHRASE", "")
+
+_EXCH_FETCHERS = {}  # lazy cache
+
+def _fetch_binance_spot(sym: str):
+    r = requests.get("https://api.binance.com/api/v3/ticker/price",
+                     params={"symbol": sym}, timeout=5)
+    return float(r.json()["price"])
+
+def _fetch_bybit_spot(sym: str):
+    bsym = sym.replace("USDT", "") + "-USDT"
+    r = requests.get("https://api.bybit.com/v5/market/tickers",
+                     params={"category": "spot", "symbol": bsym}, timeout=5)
+    items = r.json()["result"]["list"]
+    return float(items[0]["lastPrice"])
+
+def _fetch_coinbase_spot(sym: str):
+    base = sym.replace("USDT", "")
+    r = requests.get(f"https://api.coinbase.com/v2/prices/{base}-USD/spot", timeout=5)
+    return float(r.json()["data"]["amount"])
+
+def _fetch_okx_spot(sym: str):
+    osym = sym.replace("USDT", "") + "-USDT"
+    r = requests.get("https://www.okx.com/api/v5/market/ticker",
+                     params={"instId": osym}, timeout=5)
+    return float(r.json()["data"][0]["last"])
+
+def _fetch_kraken_spot(sym: str):
+    base = sym.replace("USDT", "")
+    kbase = "XBT" if base == "BTC" else base
+    r = requests.get("https://api.kraken.com/0/public/Ticker",
+                     params={"pair": f"{kbase}USDT"}, timeout=5)
+    result = r.json()["result"]
+    key = list(result.keys())[0]
+    return float(result[key]["c"][0])
+
+def _fetch_blofin_spot(sym: str):
+    bsym = sym.replace("USDT", "") + "-USDT"
+    r = requests.get("https://openapi.blofin.com/api/v1/market/tickers",
+                     params={"instId": bsym}, timeout=5)
+    data = r.json().get("data", [])
+    if not data:
+        raise ValueError("Geen data van BloFin")
+    return float(data[0]["last"])
+
+_SPOT_FETCHERS = {
+    "binance":  _fetch_binance_spot,
+    "bybit":    _fetch_bybit_spot,
+    "coinbase": _fetch_coinbase_spot,
+    "okx":      _fetch_okx_spot,
+    "kraken":   _fetch_kraken_spot,
+    "blofin":   _fetch_blofin_spot,
+}
+
+@app.get("/market/prices/{symbol}")
+def market_prices(symbol: str,
+                  x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """
+    Haalt spotprijzen op van alle exchanges (Binance, Bybit, Coinbase, OKX, Kraken, BloFin).
+    Proxied via backend zodat browser geen CORS-problemen heeft.
+    """
+    auth(x_api_key)
+    sym = symbol.upper()
+    prices = {}
+    for name, fetcher in _SPOT_FETCHERS.items():
+        try:
+            prices[name] = round(fetcher(sym), 8)
+        except Exception as e:
+            prices[name] = None
+
+    # Gewogen consensus (zelfde als exchange_intel.py)
+    weights = {"coinbase": 0.35, "binance": 0.25, "bybit": 0.20, "okx": 0.12, "kraken": 0.08}
+    w_sum, w_total = 0.0, 0.0
+    for ex, w in weights.items():
+        if prices.get(ex) is not None:
+            w_sum += prices[ex] * w
+            w_total += w
+    consensus = round(w_sum / w_total, 6) if w_total > 0 else None
+
+    return {
+        "symbol":    sym,
+        "prices":    prices,
+        "consensus": consensus,
+        "ts":        datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/clawbot/model")
+def clawbot_get_model(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Haal huidige ClawBot model instelling op."""
+    auth(x_api_key)
+    return {
+        "model": _clawbot_model,
+        "is_premium": _clawbot_model != "claude-haiku-4-5-20251001",
+        "beschikbare_modellen": {
+            "haiku":  "claude-haiku-4-5-20251001  (standaard — goedkoop)",
+            "sonnet": "claude-sonnet-4-6           (premium — alleen bij problemen)",
+        }
+    }
+
+
+class ClawbotModelRequest(BaseModel):
+    model: str   # "haiku" of "sonnet"
+
+
+@app.post("/clawbot/model")
+def clawbot_set_model(
+    body: ClawbotModelRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Stel ClawBot model in. Alleen haiku of sonnet toegestaan."""
+    auth(x_api_key)
+    global _clawbot_model
+    model_map = {
+        "haiku":  "claude-haiku-4-5-20251001",
+        "sonnet": "claude-sonnet-4-6",
+    }
+    if body.model.lower() not in model_map:
+        raise HTTPException(status_code=400, detail="Gebruik 'haiku' of 'sonnet'")
+    _clawbot_model = model_map[body.model.lower()]
+    return {"model": _clawbot_model, "status": "ingesteld"}
+
+
+class CoinApproveRequest(BaseModel):
+    symbol: str
+    action: str   # "approve" | "reject" | "pending"
+
+
+@app.get("/coins/approved")
+def coins_get_approved(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Haal alle goedgekeurde, wachtende en afgewezen nieuwe coins op."""
+    auth(x_api_key)
+    global _approved_coins
+    _approved_coins = _load_approved_coins()   # altijd vers laden
+    return _approved_coins
+
+
+@app.post("/coins/approved")
+def coins_set_approved(
+    body: CoinApproveRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Keur een coin goed, wijs hem af of zet hem terug op wachtend."""
+    auth(x_api_key)
+    global _approved_coins
+    sym = body.symbol.upper()
+    action = body.action.lower()
+    if action not in ("approve", "reject", "pending"):
+        raise HTTPException(status_code=400, detail="Gebruik 'approve', 'reject' of 'pending'")
+
+    # Verwijder uit alle lijsten
+    for key in ("approved", "rejected", "pending"):
+        if sym in _approved_coins.get(key, []):
+            _approved_coins[key].remove(sym)
+
+    if action == "approve":
+        if sym not in _approved_coins["approved"]:
+            _approved_coins["approved"].append(sym)
+    elif action == "reject":
+        if sym not in _approved_coins["rejected"]:
+            _approved_coins["rejected"].append(sym)
+    else:
+        if sym not in _approved_coins["pending"]:
+            _approved_coins["pending"].append(sym)
+
+    _save_approved_coins(_approved_coins)
+    return {"ok": True, "symbol": sym, "action": action, "coins": _approved_coins}
+
+
+@app.post("/coins/pending")
+def coins_add_pending(
+    body: CoinApproveRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Voeg een nieuwe coin toe als wachtend (gestuurd door apex_engine als Kimi hem selecteert)."""
+    auth(x_api_key)
+    global _approved_coins
+    sym = body.symbol.upper()
+    # Niet toevoegen als al goedgekeurd of afgewezen
+    if sym in _approved_coins.get("approved", []):
+        return {"ok": True, "symbol": sym, "status": "already_approved"}
+    if sym in _approved_coins.get("rejected", []):
+        return {"ok": True, "symbol": sym, "status": "rejected"}
+    if sym not in _approved_coins.get("pending", []):
+        _approved_coins["pending"].append(sym)
+        _save_approved_coins(_approved_coins)
+    return {"ok": True, "symbol": sym, "status": "pending"}
+
+
+@app.get("/history/prices/{symbol}")
+def history_prices(symbol: str, hours: int = 24,
+                   x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Historische prijs snapshots voor een coin."""
+    auth(x_api_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """SELECT ts, price, rsi, signal, change_pct, tf_bias, volume_usdt
+               FROM price_snapshots
+               WHERE symbol=? AND ts >= datetime('now', ?)
+               ORDER BY ts ASC LIMIT 500""",
+            (symbol.upper(), f"-{hours} hours")
+        ).fetchall()
+        conn.close()
+        return {"symbol": symbol.upper(), "hours": hours, "data": [
+            {"ts": r[0], "price": r[1], "rsi": r[2], "signal": r[3],
+             "change_pct": r[4], "tf_bias": r[5], "volume_usdt": r[6]}
+            for r in rows
+        ]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/crash/{symbol}")
+def history_crash(symbol: str, hours: int = 48,
+                  x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Historische pre-crash scores voor een coin."""
+    auth(x_api_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """SELECT ts, score FROM crash_score_log
+               WHERE symbol=? AND ts >= datetime('now', ?)
+               ORDER BY ts ASC LIMIT 1000""",
+            (symbol.upper(), f"-{hours} hours")
+        ).fetchall()
+        conn.close()
+        return {"symbol": symbol.upper(), "hours": hours,
+                "data": [{"ts": r[0], "score": r[1]} for r in rows]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/events")
+def history_events(hours: int = 72, event_type: str = "", symbol: str = "",
+                   x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Recente marktgebeurtenissen (BTC cascade, flash crash, pre-crash, enz.)."""
+    auth(x_api_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        query = ("SELECT ts, event_type, symbol, severity, value, description "
+                 "FROM market_events WHERE ts >= datetime('now', ?)")
+        params = [f"-{hours} hours"]
+        if event_type:
+            query += " AND event_type=?"; params.append(event_type.upper())
+        if symbol:
+            query += " AND symbol=?"; params.append(symbol.upper())
+        query += " ORDER BY ts DESC LIMIT 200"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return {"hours": hours, "events": [
+            {"ts": r[0], "type": r[1], "symbol": r[2],
+             "severity": r[3], "value": r[4], "description": r[5]}
+            for r in rows
+        ]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history/summary/{symbol}")
+def history_summary(symbol: str,
+                    x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """AI-context samenvatting: prijs range 24u, crash scores, recente events, signaal stats."""
+    auth(x_api_key)
+    try:
+        sym = symbol.upper()
+        conn = sqlite3.connect(DB_PATH)
+        p = conn.execute(
+            """SELECT AVG(price), MIN(price), MAX(price), COUNT(*),
+                      AVG(rsi), MAX(rsi), MIN(rsi)
+               FROM price_snapshots WHERE symbol=?
+               AND ts >= datetime('now', '-24 hours')""", (sym,)
+        ).fetchone()
+        c = conn.execute(
+            "SELECT MAX(score), AVG(score) FROM crash_score_log WHERE symbol=? "
+            "AND ts >= datetime('now', '-24 hours')", (sym,)
+        ).fetchone()
+        e = conn.execute(
+            """SELECT event_type, severity, description, ts FROM market_events
+               WHERE (symbol=? OR symbol IS NULL) AND ts >= datetime('now', '-48 hours')
+               ORDER BY ts DESC LIMIT 15""", (sym,)
+        ).fetchall()
+        sig = conn.execute(
+            """SELECT signal, COUNT(*), AVG(pnl_1h_pct)
+               FROM signal_performance WHERE symbol=? AND status='closed'
+               GROUP BY signal ORDER BY COUNT(*) DESC LIMIT 5""", (sym,)
+        ).fetchall()
+        conn.close()
+        return {
+            "symbol": sym,
+            "price_24h": {
+                "avg": round(p[0] or 0, 6), "min": round(p[1] or 0, 6),
+                "max": round(p[2] or 0, 6), "snapshots": p[3],
+                "avg_rsi": round(p[4] or 0, 1), "max_rsi": p[5], "min_rsi": p[6],
+            } if p and p[0] else {},
+            "crash_24h": {
+                "max_score": round(c[0] or 0, 1),
+                "avg_score": round(c[1] or 0, 1),
+            } if c and c[0] else {},
+            "recent_events": [
+                {"type": r[0], "severity": r[1], "desc": r[2], "ts": r[3]}
+                for r in e
+            ],
+            "signal_stats": [
+                {"signal": r[0], "count": r[1], "avg_pnl_1h": round(r[2] or 0, 3)}
+                for r in sig
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/stream")
