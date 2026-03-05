@@ -1,4 +1,4 @@
-import os, json, sqlite3, requests, secrets, random, time
+import os, json, sqlite3, requests, secrets, random, time, logging
 import asyncio
 import numpy as np
 from datetime import datetime, timezone, timedelta
@@ -9,6 +9,15 @@ from sse_starlette.sse import EventSourceResponse
 
 DB_PATH = "/var/apex/apex.db"
 STATE_PATH = "/var/apex/bot_state.json"
+LOG_PATH = "/var/apex/control_api.log"
+
+# File logging zodat Jojo1 logs kan uitlezen via /admin/logs
+log = logging.getLogger("control_api")
+log.setLevel(logging.INFO)
+_fh = logging.FileHandler(LOG_PATH)
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+log.addHandler(_fh)
+log.info("control_api gestart")
 TOKEN = os.getenv("CONTROL_API_TOKEN", "")
 
 # Telegram auth configuratie
@@ -56,6 +65,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class RequestLogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        resp = await call_next(request)
+        if request.url.path not in ("/health", "/docs", "/openapi.json"):
+            log.info(f"{request.method} {request.url.path} → {resp.status_code}")
+        return resp
+
+app.add_middleware(RequestLogMiddleware)
 
 class Proposal(BaseModel):
     agent: str
@@ -1381,6 +1402,36 @@ async def sse_stream(token: str = Query(default="")):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ADMIN — Log access voor Jojo1
+# ══════════════════════════════════════════════════════════════════════════════
+
+LOG_PATHS = {
+    "control_api": LOG_PATH,
+    "apex_engine": "/var/apex/apex_engine.log",
+}
+
+
+@app.get("/admin/logs")
+def admin_logs(
+    service: str = Query("control_api"),
+    lines: int = Query(50),
+    level: str = Query(""),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    auth(x_api_key)
+    lines = min(lines, 500)
+    path = LOG_PATHS.get(service)
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Log '{service}' niet gevonden. Beschikbaar: {list(LOG_PATHS.keys())}")
+    with open(path, "r", encoding="utf-8") as f:
+        all_lines = f.readlines()
+    if level:
+        all_lines = [l for l in all_lines if level.upper() in l.upper()]
+    result = [l.rstrip() for l in all_lines[-lines:]]
+    return {"service": service, "lines": result, "total": len(result)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GATEKEEPER API — Structured proposal system for OpenClaw Operator
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1446,20 +1497,30 @@ def _validate_param_bounds(payload: dict) -> list:
 def _send_confirm_telegram(proposal_id: str, ptype: str, reason: str, otp: str):
     """Stuur confirm verzoek naar Telegram."""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        log.warning(f"OTP niet verzonden voor {proposal_id}: TG_BOT_TOKEN of TG_CHAT_ID niet geconfigureerd")
         return
+    log.info(f"OTP verzenden voor proposal {proposal_id} naar chat {TG_CHAT_ID}")
+    # HTML parse mode is robuuster dan Markdown (geen problemen met underscores/asterisks)
     text = (
-        f"🔐 *VOORSTEL {proposal_id}*\n"
-        f"Type: `{ptype}`\n"
+        f"🔐 <b>VOORSTEL {proposal_id}</b>\n"
+        f"Type: <code>{ptype}</code>\n"
         f"Reden: {reason}\n\n"
-        f"Bevestig met OTP: `{otp}`\n"
-        f"Of via API: `POST /proposals/{proposal_id}/confirm` met OTP header"
+        f"Bevestig met OTP: <code>{otp}</code>\n"
+        f"Of via API: <code>POST /proposals/{proposal_id}/confirm</code> met OTP header"
     )
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"},
             timeout=10,
         )
+        if not r.ok:
+            # Fallback: stuur zonder formatting
+            requests.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": f"VOORSTEL {proposal_id}\nType: {ptype}\nOTP: {otp}"},
+                timeout=10,
+            )
     except Exception:
         pass
 
