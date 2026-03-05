@@ -679,6 +679,98 @@ def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY"))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Trading halt state ────────────────────────────────────────────────────
+# Opgeslagen in geheugen + state file voor apex_engine
+
+HALT_FILE = "/var/apex/trading_halt.json"
+
+_trading_halt: dict = {"halted": False, "paused_until": None, "reason": ""}
+_pending_answers: dict = {}   # q_id → antwoord
+
+
+def _write_halt_file():
+    try:
+        with open(HALT_FILE, "w") as f:
+            json.dump(_trading_halt, f)
+    except Exception:
+        pass
+
+
+class TradingPauseRequest(BaseModel):
+    minutes: int = 30
+    reason: str = ""
+
+class TradingAnswerRequest(BaseModel):
+    q_id: str
+    antwoord: str   # "ok" | "stop" | "skip"
+
+
+@app.post("/trading/halt")
+def trading_halt(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Noodstop — staak alle orders onmiddellijk."""
+    auth(x_api_key)
+    _trading_halt["halted"] = True
+    _trading_halt["paused_until"] = None
+    _trading_halt["reason"] = "manual noodstop"
+    _write_halt_file()
+    return {"status": "halted", "message": "Trading gestopt."}
+
+
+@app.post("/trading/resume")
+def trading_resume(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Hervat trading na noodstop of pauze."""
+    auth(x_api_key)
+    _trading_halt["halted"] = False
+    _trading_halt["paused_until"] = None
+    _trading_halt["reason"] = ""
+    _write_halt_file()
+    return {"status": "resumed", "message": "Trading hervat."}
+
+
+@app.post("/trading/pause")
+def trading_pause(
+    body: TradingPauseRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Pauzeert trading voor X minuten."""
+    auth(x_api_key)
+    until = datetime.now(timezone.utc) + timedelta(minutes=body.minutes)
+    _trading_halt["halted"] = False
+    _trading_halt["paused_until"] = until.isoformat()
+    _trading_halt["reason"] = body.reason or f"pauze {body.minutes} minuten"
+    _write_halt_file()
+    return {"status": "paused", "paused_until": until.isoformat(), "minutes": body.minutes}
+
+
+@app.get("/trading/status")
+def trading_status(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Geeft huidige trading halt/pauze status."""
+    auth(x_api_key)
+    return _trading_halt.copy()
+
+
+@app.post("/trading/answer")
+def trading_answer(
+    body: TradingAnswerRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Sla gebruikersantwoord op voor ask_user_with_countdown."""
+    auth(x_api_key)
+    _pending_answers[body.q_id] = body.antwoord
+    return {"q_id": body.q_id, "antwoord": body.antwoord}
+
+
+@app.get("/trading/answer")
+def get_trading_answer(
+    q_id: str = Query(default=""),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Poll voor antwoord op een specifieke vraag (q_id). Verwijdert het na lezen."""
+    auth(x_api_key)
+    antwoord = _pending_answers.pop(q_id, None)
+    return {"q_id": q_id, "antwoord": antwoord}
+
+
 @app.get("/stream")
 async def sse_stream(token: str = Query(default="")):
     """

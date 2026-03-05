@@ -1,4 +1,4 @@
-import os, time
+import os, time, json
 from datetime import datetime, timezone
 from .core.state import write_state
 from .core.db import (init_db, log_event, log_order, log_signal_entry,
@@ -22,6 +22,29 @@ TOP_N              = int(os.getenv("KIMI_TOP_N", "5"))
 INDICATOR_INTERVAL = os.getenv("INDICATOR_INTERVAL", "5m")
 ORDER_COOLDOWN         = int(os.getenv("ORDER_COOLDOWN", "120"))
 SIGNAL_LOG_COOLDOWN    = int(os.getenv("SIGNAL_LOG_COOLDOWN", "900"))  # 15 minuten
+
+HALT_FILE = "/var/apex/trading_halt.json"
+
+
+def _is_trading_halted() -> bool:
+    """Lees trading halt state uit gedeeld bestand (geschreven door control_api)."""
+    try:
+        with open(HALT_FILE, "r") as f:
+            d = json.load(f)
+        if d.get("halted"):
+            return True
+        paused_until = d.get("paused_until")
+        if paused_until:
+            from datetime import timezone as tz
+            until = datetime.fromisoformat(paused_until)
+            if datetime.now(timezone.utc) < until:
+                return True
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[apex] Halt-file leesfout: {e}")
+    return False
+
 
 def guardrails():
     if TRADING_MODE != "demo":
@@ -70,7 +93,7 @@ def main():
 
             # Flash crash
             flash_triggered = flash_detect.update(sym, price, vol)
-            if flash_triggered:
+            if flash_triggered and not _is_trading_halted():
                 try:
                     res = executor.place_market_buy(size="1")
                     log_order(db_path, executor="blofin_demo", symbol=sym,
@@ -135,7 +158,8 @@ def main():
             # Order logica — Perfect Day = dubbele size
             order_signal = signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY")
             if order_signal and price and not flash_triggered and not ind.get("danger") \
-               and (now - last_order.get(sym, 0)) > ORDER_COOLDOWN:
+               and (now - last_order.get(sym, 0)) > ORDER_COOLDOWN \
+               and not _is_trading_halted():
                 try:
                     size = "2" if perfect_day else "1"  # dubbele size bij Perfect Day
                     res = executor.place_market_buy(size=size)

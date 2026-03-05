@@ -215,6 +215,122 @@ def cmd_zoek(chat_id, query: str):
         antwoord = web_result
     send_message(chat_id, f"🔍 *{query}*\n\n{antwoord}")
 
+def cmd_noodstop(chat_id):
+    """NOODSTOP — staak alle trading onmiddellijk."""
+    try:
+        r = requests.post(f"{CONTROL_API_URL}/trading/halt", headers=api_headers(), timeout=5)
+        if r.status_code == 200:
+            send_message(chat_id,
+                "🛑 *NOODSTOP ACTIEF*\n\n"
+                "Alle trading is onmiddellijk gestopt.\n"
+                "Gebruik /start om te hervatten."
+            )
+        else:
+            send_message(chat_id, f"❌ Noodstop mislukt: {r.text}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Noodstop fout: {e}")
+
+
+def cmd_start_trading(chat_id):
+    """Hervat trading na noodstop of pauze."""
+    try:
+        r = requests.post(f"{CONTROL_API_URL}/trading/resume", headers=api_headers(), timeout=5)
+        if r.status_code == 200:
+            send_message(chat_id,
+                "✅ *Trading hervat*\n\n"
+                "OpenClaw is weer actief."
+            )
+        else:
+            send_message(chat_id, f"❌ Hervatten mislukt: {r.text}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Hervatten fout: {e}")
+
+
+def cmd_pauzeer(chat_id, args: str):
+    """Pauzeert trading voor X minuten: /pauzeer 30"""
+    parts = args.strip().split()
+    try:
+        minutes = int(parts[0]) if parts else 30
+    except ValueError:
+        minutes = 30
+    try:
+        r = requests.post(
+            f"{CONTROL_API_URL}/trading/pause",
+            headers=api_headers(),
+            json={"minutes": minutes, "reason": "handmatige pauze via Telegram"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            d = r.json()
+            send_message(chat_id,
+                f"⏸️ *Trading gepauzeerd*\n\n"
+                f"Duur: {minutes} minuten\n"
+                f"Hervat om: `{d.get('paused_until','?')[:19].replace('T',' ')} UTC`\n\n"
+                "Gebruik /start om eerder te hervatten."
+            )
+        else:
+            send_message(chat_id, f"❌ Pauze mislukt: {r.text}")
+    except Exception as e:
+        send_message(chat_id, f"❌ Pauze fout: {e}")
+
+
+def cmd_ok(chat_id, text: str):
+    """Beantwoord een pending OpenClaw vraag met 'ok'."""
+    # Extract q_id uit tekst als aanwezig, anders gebruik laatste
+    q_id = None
+    parts = text.strip().split()
+    if len(parts) > 1:
+        q_id = parts[1]
+    if not q_id:
+        send_message(chat_id, "✅ OK ontvangen (geen vraag-id — gebruik /ok <q_id>)")
+        return
+    try:
+        requests.post(
+            f"{CONTROL_API_URL}/trading/answer",
+            headers=api_headers(),
+            json={"q_id": q_id, "antwoord": "ok"},
+            timeout=5
+        )
+        send_message(chat_id, f"✅ Antwoord 'ok' doorgegeven voor vraag `{q_id}`.")
+    except Exception as e:
+        send_message(chat_id, f"❌ Antwoord fout: {e}")
+
+
+def cmd_skip(chat_id, text: str):
+    """Beantwoord een pending OpenClaw vraag met 'skip'."""
+    parts = text.strip().split()
+    q_id = parts[1] if len(parts) > 1 else None
+    if not q_id:
+        send_message(chat_id, "⏭️ Skip ontvangen (geen vraag-id — gebruik /skip <q_id>)")
+        return
+    try:
+        requests.post(
+            f"{CONTROL_API_URL}/trading/answer",
+            headers=api_headers(),
+            json={"q_id": q_id, "antwoord": "skip"},
+            timeout=5
+        )
+        send_message(chat_id, f"⏭️ Antwoord 'skip' doorgegeven voor vraag `{q_id}`.")
+    except Exception as e:
+        send_message(chat_id, f"❌ Antwoord fout: {e}")
+
+
+def cmd_tradingstatus(chat_id):
+    """Toon huidige trading halt/pauze status."""
+    try:
+        r = requests.get(f"{CONTROL_API_URL}/trading/status", headers=api_headers(), timeout=5)
+        d = r.json()
+        if d.get("halted"):
+            send_message(chat_id, "🛑 *Trading: GESTOPT (noodstop)*\nGebruik /start om te hervatten.")
+        elif d.get("paused_until"):
+            until = d["paused_until"][:19].replace("T", " ")
+            send_message(chat_id, f"⏸️ *Trading: GEPAUZEERD*\nTot: `{until} UTC`\nGebruik /start om eerder te hervatten.")
+        else:
+            send_message(chat_id, "✅ *Trading: ACTIEF*")
+    except Exception as e:
+        send_message(chat_id, f"❌ Status fout: {e}")
+
+
 def cmd_help(chat_id):
     send_message(chat_id,
         "📋 *OpenClaw Discuss Bot*\n\n"
@@ -224,6 +340,13 @@ def cmd_help(chat_id):
         "/perf — signal performance stats\n"
         "/backtest [SYMBOL] [interval] — bijv. /backtest BTC 4h\n"
         "/zoek [query] — zoek actuele info op\n"
+        "/tradingstatus — trading halt/pauze status\n\n"
+        "🛑 *Noodstop commando's:*\n"
+        "/stop — NOODSTOP (staak alle orders)\n"
+        "/start — hervat trading\n"
+        "/pauzeer [minuten] — pauze (standaard 30 min)\n"
+        "/ok <q_id> — bevestig ClawBot vraag\n"
+        "/skip <q_id> — sla ClawBot vraag over\n\n"
         "/help — dit menu\n\n"
         "💬 _Of stel gewoon een vraag over de markt!_"
     )
@@ -245,6 +368,18 @@ def handle(chat_id: str, user_id: str, text: str):
         cmd_backtest(chat_id, text[9:])
     elif text.startswith("/zoek"):
         cmd_zoek(chat_id, text[5:].strip())
+    elif text.startswith("/stop"):
+        cmd_noodstop(chat_id)
+    elif text.startswith("/start"):
+        cmd_start_trading(chat_id)
+    elif text.startswith("/pauzeer"):
+        cmd_pauzeer(chat_id, text[8:])
+    elif text.startswith("/ok"):
+        cmd_ok(chat_id, text)
+    elif text.startswith("/skip"):
+        cmd_skip(chat_id, text)
+    elif text.startswith("/tradingstatus"):
+        cmd_tradingstatus(chat_id)
     elif text.startswith("/propose"):
         payload = {"agent": "DiscussBot", "params": {"note": "manual"}, "reason": "handmatig"}
         r = requests.post(f"{CONTROL_API_URL}/config/propose", headers=api_headers(), json=payload, timeout=5)
@@ -256,7 +391,7 @@ def handle(chat_id: str, user_id: str, text: str):
             return
         r = requests.post(f"{CONTROL_API_URL}/proposals/{int(parts[1])}/apply", headers=api_headers(), timeout=5)
         send_message(chat_id, f"🟢 Toegepast: {r.text}")
-    elif text.startswith("/help") or text.startswith("/start"):
+    elif text.startswith("/help"):
         cmd_help(chat_id)
     else:
         # Vrije vraag → Kimi beantwoordt met marktcontext

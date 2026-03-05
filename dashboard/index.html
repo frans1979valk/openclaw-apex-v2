@@ -400,7 +400,6 @@ function renderHistResult(symbol, d) {
     <tbody>`;
 
   const signalOrder = ["PERFECT_DAY","BREAKOUT_BULL","MOMENTUM","BUY"];
-  const filterSig = histSigFilter || "";
   for (const sig of signalOrder) {
     if (filterSig && sig !== filterSig) continue;
     const s = by[sig];

@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 import requests
 from openai import OpenAI
+from clawbot import ask_clawbot, clawbot_available
 
 # ── Config ────────────────────────────────────────────────────────────────
 CONTROL_API_URL   = os.getenv("CONTROL_API_URL",   "http://control_api:8080")
@@ -150,6 +151,108 @@ def _record_apply() -> None:
     _applies_today += 1
 
 
+# ── Trading halt state ────────────────────────────────────────────────────
+
+def _get_trading_status() -> dict:
+    result = _api_get("/trading/status")
+    return result or {"halted": False, "paused_until": None}
+
+
+def _is_trading_halted() -> bool:
+    status = _get_trading_status()
+    if status.get("halted"):
+        return True
+    paused_until = status.get("paused_until")
+    if paused_until:
+        try:
+            until = datetime.fromisoformat(paused_until)
+            if datetime.now(timezone.utc) < until:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+# ── ask_user_with_countdown ────────────────────────────────────────────────
+
+# Urgentie → wachttijd in seconden
+URGENCY_TIMEOUT = {
+    "LOW":      120,   # 2 minuten
+    "MEDIUM":    60,   # 1 minuut
+    "HIGH":      30,   # 30 seconden
+    "CRITICAL":  15,   # 15 seconden
+}
+
+# Token voor pending question — discuss_bot schrijft antwoord hierop
+_pending_question_id: Optional[str] = None
+
+
+def ask_user_with_countdown(
+    question: str,
+    urgentie: str = "MEDIUM",
+    default_actie: str = "AFWACHTEN",
+    coin: str = "",
+) -> str:
+    """
+    Stuur een vraag via Telegram met countdown en wacht op antwoord.
+
+    De discuss_bot leest /ok, /stop, /skip commando's en slaat ze op via
+    de control_api (/trading/answer). Wij pollen die endpoint totdat de
+    timeout verlopen is.
+
+    Args:
+        question:      Vraag tekst
+        urgentie:      LOW | MEDIUM | HIGH | CRITICAL
+        default_actie: Actie als gebruiker niet reageert
+        coin:          Coin waarover de vraag gaat
+
+    Returns:
+        Antwoord string: "ok" | "stop" | "skip" | default_actie (timeout)
+    """
+    global _pending_question_id
+
+    timeout = URGENCY_TIMEOUT.get(urgentie, 60)
+    q_id = f"q_{int(time.time())}"
+    _pending_question_id = q_id
+
+    urgency_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(urgentie, "⚪")
+
+    # Stuur vraag naar Telegram
+    msg = (
+        f"{urgency_emoji} *OpenClaw vraagt jou* [{urgentie}]\n\n"
+        f"{question}\n"
+        + (f"📌 Coin: `{coin}`\n" if coin else "")
+        + f"\n⏳ Timeout: {timeout}s → standaard: *{default_actie}*\n\n"
+        f"Reageer met:\n"
+        f"  `/ok` — uitvoeren\n"
+        f"  `/stop` — noodstop\n"
+        f"  `/skip` — sla over\n"
+        f"_(vraag-id: `{q_id}`)_"
+    )
+    _send_telegram(msg)
+    log.info(f"ask_user_with_countdown: urgentie={urgentie}, timeout={timeout}s, q_id={q_id}")
+
+    # Poll control_api voor antwoord
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = int(deadline - time.time())
+        try:
+            r = _api_get("/trading/answer", {"q_id": q_id})
+            if r and r.get("antwoord"):
+                antwoord = r["antwoord"].lower().strip()
+                log.info(f"Gebruiker antwoordde: {antwoord} op vraag {q_id}")
+                _pending_question_id = None
+                return antwoord
+        except Exception:
+            pass
+        time.sleep(5)
+
+    _pending_question_id = None
+    log.info(f"Countdown verlopen — standaard actie: {default_actie}")
+    _send_telegram(f"⏰ Geen reactie ontvangen — OpenClaw voert standaard actie uit: *{default_actie}*")
+    return default_actie.lower()
+
+
 # ── Morning Briefing ──────────────────────────────────────────────────────
 
 _briefing_sent_today: str = ""
@@ -228,22 +331,27 @@ def _reset_daily_decisions():
 def autonomous_decision_loop() -> None:
     """
     Analyseert de huidige markt autonomisch en neemt beslissingen:
-    - Welke coin heeft het meeste kans vandaag?
-    - Is het een goed moment om bij te sturen?
-    - Stuur countdown naar volgende verwachte signaal.
+    1. Kimi K2.5 analyseert signalen → eerste laag
+    2. ClawBot (Claude Sonnet) reviewt → strategische laag
+    3. Hoog-urgente beslissingen vragen gebruiker via countdown
     """
     _reset_daily_decisions()
     if _auto_decision_count_today >= MAX_AUTO_DECISIONS_PER_DAY:
         return
 
-    log.info("=== Autonome beslissingsengine ===")
+    # Check noodstop
+    if _is_trading_halted():
+        log.info("Trading gepauzeerd/gestopt — autonome engine wacht.")
+        return
+
+    log.info("=== Autonome beslissingsengine (Kimi + ClawBot) ===")
     state = _api_get("/state/latest") or {}
     coins = state.get("coins", [])
     if not coins:
         return
 
     # Filter actionable coins
-    buy_signals = [c for c in coins if c.get("signal") in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY")]
+    buy_signals  = [c for c in coins if c.get("signal") in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY")]
     danger_coins = [c for c in coins if c.get("danger")]
 
     if not buy_signals and not danger_coins:
@@ -256,42 +364,110 @@ def autonomous_decision_loop() -> None:
         for c in coins[:8]
     )
 
+    # ── Stap 1: Kimi analyse ─────────────────────────────────────────────
     prompt = (
         f"Actuele markt:\n{coin_summary}\n\n"
         f"Danger coins: {[c['symbol'] for c in danger_coins]}\n"
         f"Buy signalen: {[c['symbol'] for c in buy_signals]}\n\n"
         "Geef JSON:\n"
-        '{"actie": "AFWACHTEN|INZETTEN|VERMIJDEN", "coin": "BTCUSDT", "reden": "...", '
+        '{"actie": "AFWACHTEN|INZETTEN|VERMIJDEN|SHORT", "coin": "BTCUSDT", "reden": "...", '
         '"countdown_minuten": 15, "confidence_pct": 70}'
     )
-
-    raw = _ask_kimi(
+    raw  = _ask_kimi(
         system="Je bent een autonome trading beslissingsengine. Analyseer de markt en geef een concreet advies.",
         user=prompt,
         max_tokens=400,
     )
-    decision = _parse_json(raw)
-    if not decision or "actie" not in decision:
+    kimi_decision = _parse_json(raw)
+    if not kimi_decision or "actie" not in kimi_decision:
         log.info("Autonome engine: geen bruikbaar antwoord van Kimi.")
         return
 
-    actie      = decision.get("actie", "AFWACHTEN")
-    coin       = decision.get("coin", "?")
-    reden      = decision.get("reden", "")
-    countdown  = decision.get("countdown_minuten", 0)
-    confidence = decision.get("confidence_pct", 0)
+    log.info(f"Kimi beslissing: {kimi_decision.get('actie')} | {kimi_decision.get('coin')} | "
+             f"confidence={kimi_decision.get('confidence_pct')}%")
+
+    # ── Stap 2: ClawBot strategische review ─────────────────────────────
+    live_perf = _api_get("/signal-performance", {"limit": 50}) or []
+    closed    = [r for r in live_perf if r.get("pnl_1h_pct") is not None]
+    wins      = [r for r in closed if r["pnl_1h_pct"] > 0]
+    live_perf_summary = {
+        "total_signals":   len(live_perf),
+        "closed_signals":  len(closed),
+        "win_rate_pct":    round(len(wins) / len(closed) * 100) if closed else 0,
+        "avg_pnl_1h":      round(sum(r["pnl_1h_pct"] for r in closed) / len(closed), 2) if closed else 0,
+    }
+
+    # Bepaal situatie voor ClawBot context
+    situation = "normal"
+    if any(c.get("flash_crash") for c in coins):
+        situation = "market_crash"
+    elif len(buy_signals) >= 3 and any(c.get("signal") == "PERFECT_DAY" for c in buy_signals):
+        situation = "perfect_day_2x"
+    elif live_perf_summary["win_rate_pct"] < 40 and live_perf_summary["closed_signals"] >= 10:
+        situation = "win_rate_crash"
+
+    final_decision = kimi_decision.copy()
+
+    if clawbot_available():
+        clawbot_result = ask_clawbot(
+            kimi_output  = kimi_decision,
+            db_context   = {},
+            live_perf    = live_perf_summary,
+            situation    = situation,
+        )
+        if clawbot_result and "beslissing" in clawbot_result:
+            # ClawBot mapt "beslissing" → "actie" voor uniformiteit
+            final_decision["actie"]        = clawbot_result["beslissing"]
+            final_decision["reden"]        = clawbot_result.get("reden", kimi_decision.get("reden", ""))
+            final_decision["confidence_pct"] = clawbot_result.get("confidence_pct",
+                                                                   kimi_decision.get("confidence_pct", 0))
+            final_decision["urgentie"]     = clawbot_result.get("urgentie", "LOW")
+            final_decision["override_kimi"] = clawbot_result.get("override_kimi", False)
+            log.info(f"ClawBot override: {clawbot_result.get('override_kimi')} | "
+                     f"urgentie: {clawbot_result.get('urgentie')}")
+    else:
+        final_decision["urgentie"] = "LOW"
+
+    actie      = final_decision.get("actie", "AFWACHTEN")
+    coin       = final_decision.get("coin", "?")
+    reden      = final_decision.get("reden", "")
+    countdown  = final_decision.get("countdown_minuten", 0)
+    confidence = final_decision.get("confidence_pct", 0)
+    urgentie   = final_decision.get("urgentie", "LOW")
 
     global _auto_decision_count_today
     _auto_decision_count_today += 1
 
-    log.info(f"Autonome beslissing: {actie} | {coin} | confidence={confidence}% | countdown={countdown}min")
+    log.info(f"Finale beslissing: {actie} | {coin} | confidence={confidence}% | "
+             f"urgentie={urgentie} | countdown={countdown}min")
 
-    emoji = {"INZETTEN": "🟢", "VERMIJDEN": "🔴", "AFWACHTEN": "🟡"}.get(actie, "⚪")
+    # ── Stap 3: Hoge urgentie → vraag gebruiker ──────────────────────────
+    if urgentie in ("HIGH", "CRITICAL") and actie in ("INZETTEN", "SHORT"):
+        vraag = (
+            f"ClawBot adviseert *{actie}* op `{coin}` (confidence: {confidence}%).\n"
+            f"💡 _{reden}_\n\nMag ik dit uitvoeren?"
+        )
+        antwoord = ask_user_with_countdown(
+            question=vraag,
+            urgentie=urgentie,
+            default_actie="AFWACHTEN",
+            coin=coin,
+        )
+        if antwoord == "stop":
+            _send_telegram("🛑 Noodstop ontvangen — actie geannuleerd.")
+            return
+        elif antwoord not in ("ok",):
+            _send_telegram(f"⏭️ Actie *{actie}* overgeslagen op gebruikersverzoek.")
+            return
+
+    emoji = {"INZETTEN": "🟢", "VERMIJDEN": "🔴", "AFWACHTEN": "🟡", "SHORT": "🩳"}.get(actie, "⚪")
+    clawbot_tag = " _(ClawBot)_" if clawbot_available() else " _(Kimi)_"
     msg = (
-        f"{emoji} *OpenClaw Autonome Beslissing*\n\n"
+        f"{emoji} *OpenClaw Autonome Beslissing*{clawbot_tag}\n\n"
         f"Actie: *{actie}*\n"
         f"Coin: `{coin}`\n"
         f"Confidence: {confidence}%\n"
+        f"Urgentie: {urgentie}\n"
         f"💡 _{reden}_\n"
         + (f"\n⏳ Countdown: ~{countdown} minuten tot signaal" if countdown > 0 else "")
     )
