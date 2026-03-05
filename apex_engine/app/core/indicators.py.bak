@@ -8,7 +8,7 @@ import pandas as pd
 import talib
 from typing import Dict, Optional
 
-def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 300) -> Optional[Dict[str, np.ndarray]]:
+def fetch_ohlcv(symbol: str, interval: str = "5m", limit: int = 200) -> Optional[Dict[str, np.ndarray]]:
     try:
         r = requests.get(
             "https://api.binance.com/api/v3/klines",

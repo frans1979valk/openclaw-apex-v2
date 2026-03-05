@@ -46,8 +46,7 @@ def cmd_coins(chat_id):
         arrow = "🟢" if chg >= 0 else "🔴"
         sig   = {"BUY":"🟢BUY","SELL":"🔴SELL","HOLD":"⚪HOLD"}.get(signal,"⚪")
         lines.append(f"{i}. {arrow} *{sym}* ${price:.4f} ({chg:+.2f}%) Vol:{vol:.1f}M")
-        rsi_str = f"{rsi:.0f}" if rsi else "—"
-        lines.append(f"   {sig}  RSI:{rsi_str}")
+        lines.append(f"   {sig}  RSI:{rsi:.0f if rsi else '—'}")
         lines.append(f"   💡 {reden}")
         lines.append("")
     send_message(chat_id, "\n".join(lines))

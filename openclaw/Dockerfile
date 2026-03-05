@@ -1,4 +1,5 @@
-FROM node:20-alpine
+FROM python:3.12-slim
 WORKDIR /workspace
-RUN npm i -g openclaw@latest || true
-CMD ["sh", "-lc", "echo 'OpenClaw ready. Use: docker compose exec openclaw openclaw --help' && tail -f /dev/null"]
+RUN pip install --no-cache-dir requests openai
+COPY bot.py /workspace/bot.py
+CMD ["python", "bot.py"]

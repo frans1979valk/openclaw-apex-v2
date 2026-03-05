@@ -4,3 +4,4 @@ pydantic==2.8.2
 requests==2.32.3
 numpy==1.26.4
 ta-lib==0.4.32
+sse-starlette==1.8.2

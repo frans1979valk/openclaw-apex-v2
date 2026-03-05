@@ -19,7 +19,6 @@ AGENT_INTERVAL     = int(os.getenv("AGENT_INTERVAL", "1800"))
 TOP_N              = int(os.getenv("KIMI_TOP_N", "5"))
 INDICATOR_INTERVAL = os.getenv("INDICATOR_INTERVAL", "5m")
 ORDER_COOLDOWN     = int(os.getenv("ORDER_COOLDOWN", "120"))
-SIGNAL_LOG_COOLDOWN = 900
 
 def guardrails():
     if TRADING_MODE != "demo":
@@ -107,6 +106,7 @@ def main():
             })
 
             # Signal performance logging — max 1x per 15 min per (coin+signaal)
+            SIGNAL_LOG_COOLDOWN = 900  # 15 minuten
             sig_key = (sym, signal)
             if signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY") and price \
                and (now - last_signal_log.get(sig_key, 0)) > SIGNAL_LOG_COOLDOWN:

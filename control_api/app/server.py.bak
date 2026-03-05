@@ -1,11 +1,9 @@
 import os, json, sqlite3, requests, secrets, random, time
-import asyncio
 import numpy as np
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
 
 DB_PATH = "/var/apex/apex.db"
 STATE_PATH = "/var/apex/bot_state.json"
@@ -606,52 +604,6 @@ def historical_signals(
              "entry": r[3], "pnl_1h": r[4], "pnl_4h": r[5], "pnl_24h": r[6]}
             for r in rows]
 
-
-@app.get("/stream")
-async def stream_state(token: str = Query(...)):
-    """SSE stream voor real-time bot state updates"""
-    if not TOKEN:
-        raise RuntimeError("CONTROL_API_TOKEN missing")
-
-    if token != TOKEN:
-        conn = sqlite3.connect(DB_PATH)
-        ensure_auth_tables(conn)
-        cur = conn.cursor()
-        cur.execute("SELECT expires_at FROM sessions WHERE token=?", (token,))
-        row = cur.fetchone()
-        conn.close()
-
-        if not row:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        exp = datetime.fromisoformat(row[0])
-        if datetime.now(timezone.utc) >= exp:
-            raise HTTPException(status_code=401, detail="Session expired")
-
-    async def event_generator():
-        last_ts = None
-        while True:
-            try:
-                with open(STATE_PATH, "r", encoding="utf-8") as f:
-                    state = json.load(f)
-
-                current_ts = state.get("ts")
-
-                if current_ts != last_ts:
-                    yield {
-                        "event": "state",
-                        "data": json.dumps(state)
-                    }
-                    last_ts = current_ts
-
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                print(f"[SSE] Error: {e}")
-
-            await asyncio.sleep(2)
-
-    return EventSourceResponse(event_generator())
 
 @app.get("/balance")
 def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
