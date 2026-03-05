@@ -158,6 +158,38 @@ python3 /workspace/tools/tool_analytics.py oracle event "Fed verhoogt rente"
 
 ---
 
+## TOOL: tool_pattern_agent (Kimi patroonanalyse)
+
+**Gebruik:**
+```bash
+# Status + scheduled jobs
+python3 /workspace/tools/tool_pattern_agent.py status
+
+# Handmatig OHLCV data ophalen
+python3 /workspace/tools/tool_pattern_agent.py collect
+
+# Handmatig Kimi analyse starten (kost Kimi tokens)
+python3 /workspace/tools/tool_pattern_agent.py analyze
+
+# Laatste rapport ophalen
+python3 /workspace/tools/tool_pattern_agent.py report
+python3 /workspace/tools/tool_pattern_agent.py report 2026-03-06
+
+# OHLCV data status
+python3 /workspace/tools/tool_pattern_agent.py ohlcv
+
+# Signaal performance stats
+python3 /workspace/tools/tool_pattern_agent.py stats
+```
+
+**Automatisch:** OHLCV collectie elke 4u, Kimi analyse elke nacht om 03:00 UTC.
+**Rapport:** `/var/apex/pattern_report_DATUM.json` — bevat patronen, risico-level, aanbevelingen.
+**Alert:** bij high-impact bevindingen stuurt Kimi automatisch een Telegram alert.
+
+**Regel:** gebruik `analyze` spaarzaam — het kost Kimi tokens. Gebruik `stats` en `report` voor gratis data.
+
+---
+
 ## AGENT SWITCHING
 
 Via Telegram kun je wisselen van agent door de eigenaar te vragen:

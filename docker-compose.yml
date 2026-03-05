@@ -164,6 +164,40 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # ── Kimi Pattern Agent ────────────────────────────────────────────────────
+  # Nachtelijke patroonanalyse: OHLCV collectie + Kimi AI analyse.
+  # Rapport naar /var/apex/pattern_report_DATUM.json.
+  kimi_pattern_agent:
+    build: ./kimi_pattern_agent
+    ports:
+      - "127.0.0.1:8098:8098"
+    volumes:
+      - apex_data:/var/apex
+    environment:
+      - KIMI_API_KEY=${KIMI_API_KEY:-}
+      - KIMI_BASE_URL=https://api.moonshot.ai/v1
+      - KIMI_MODEL=moonshot-v1-32k
+      - BINANCE_BASE=https://api.binance.com
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN_COORDINATOR:-}
+      - TG_CHAT_ID=${TG_CHAT_ID:-}
+      - TRACKED_COINS=BTCUSDT,ETHUSDT,SOLUSDT,AVAXUSDT,AAVEUSDT
+      - ANALYSIS_HOUR=3
+    env_file:
+      - ./secrets/apex.env
+    networks:
+      - agent_net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8098/health | grep -q '\"status\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
   tg_coordinator_bot:
     build:
       context: ./telegram
