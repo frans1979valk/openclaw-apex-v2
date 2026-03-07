@@ -1,7 +1,10 @@
 """
-setup_judge — realtime decision layer op basis van historische signal_context data.
+setup_judge — realtime decision layer op basis van historical_context (PostgreSQL).
 
-Geen AI-calls. Raadpleegt apex.db direct.
+Primaire data: historical_context (31k+ records, 2022-2026, via jojo_analytics)
+Recente correctie: signal_context (SQLite, laatste weken, optioneel)
+
+Geen AI-calls.
 
 CLI aanroep:
   python3 setup_judge.py --symbol BTCUSDT --signal BUY --rsi 32.5 --macd bullish --adx 28
@@ -9,7 +12,7 @@ CLI aanroep:
 Python import:
   from setup_judge import judge
   result = judge("BTCUSDT", "BUY", rsi=32.5, macd="bullish", adx=28.0)
-  print(result["verdict"])  # SKIP / TWIJFEL / TOESTAAN
+  print(result["verdict"])  # SKIP / TWIJFEL / TOESTAAN / ONBEKEND
 
 Retourneert dict met:
   verdict     : SKIP / TWIJFEL / TOESTAAN / ONBEKEND
@@ -19,27 +22,40 @@ Retourneert dict met:
   avg_4h      : gemiddelde PnL 4h
   win_pct_1h  : win percentage 1h
   reden       : leesbare uitleg
-  coin_verdict: coin-specifiek oordeel (indien genoeg data)
+  levels      : detail per niveau
 """
 import sqlite3
 import argparse
 import json
 import os
 
-DB_PATH = os.getenv("APEX_DB", "/var/apex/apex.db")
+import requests
 
-# ── Drempels (zelfde als signal_analyzer.py) ─────────────────────────────────
+ANALYTICS_URL = os.getenv("ANALYTICS_URL", "http://jojo_analytics:8097")
+DB_PATH       = os.getenv("APEX_DB", "/var/apex/apex.db")
+
+# ── Drempels ──────────────────────────────────────────────────────────────────
 SKIP_WIN_PCT   = 25.0
 ALLOW_WIN_PCT  = 40.0
 SKIP_PNL_1H    = -0.30
 ALLOW_PNL_1H   =  0.00
 
-MIN_N_VERDICT  = 5    # min. trades voor een oordeel
+MIN_N_VERDICT  = 10   # min. trades voor een oordeel (ruimer vanwege grotere dataset)
 MIN_N_COIN     = 5    # min. trades voor coin-specifiek oordeel
 
-# Confidence op basis van n
-CONFIDENCE_HIGH   = 20
-CONFIDENCE_MEDIUM = 8
+CONFIDENCE_HIGH   = 50
+CONFIDENCE_MEDIUM = 20
+
+
+def _query(sql: str) -> list:
+    """Voert een SELECT uit via jojo_analytics /query. Retourneert lijst van rijen."""
+    try:
+        r = requests.post(f"{ANALYTICS_URL}/query", json={"sql": sql}, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("rows", [])
+    except Exception:
+        return []
 
 
 def _rsi_zone(rsi):
@@ -52,13 +68,6 @@ def _rsi_zone(rsi):
     if rsi < 65:
         return "mid-high"
     return "overbought"
-
-
-def _adx_strong(adx):
-    """1 als trending (adx >= 25), 0 als ranging."""
-    if adx is None:
-        return None
-    return 1 if adx >= 25 else 0
 
 
 def _confidence(n):
@@ -90,149 +99,167 @@ def _verdict(win_pct, avg_1h, n):
     return "TWIJFEL"
 
 
-def judge(symbol: str, signal: str, rsi: float = None,
-          macd: str = None, adx: float = None) -> dict:
-    """
-    Geeft een verdict terug voor de gegeven setup.
-    Kijkt op 3 niveaus: generiek → coin-specifiek → combinatie.
-    """
-    con = sqlite3.connect(DB_PATH)
+def _hctx_aggregate(where_clause: str) -> tuple:
+    """Haalt n/avg_1h/avg_4h/win1h op uit historical_context met gegeven WHERE."""
+    rows = _query(f"""
+        SELECT COUNT(*) as n,
+            ROUND(AVG(pnl_1h_pct)::numeric, 3) as avg_1h,
+            ROUND(AVG(pnl_4h_pct)::numeric, 3) as avg_4h,
+            ROUND(100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)::numeric
+                  / NULLIF(COUNT(*), 0), 1) as win1h
+        FROM historical_context
+        WHERE pnl_1h_pct IS NOT NULL
+          AND symbol != 'USDCUSDT'
+          AND {where_clause}
+    """)
+    return rows[0] if rows else None
 
-    rsi_zone  = _rsi_zone(rsi)
-    adx_str   = _adx_strong(adx)
-    sym       = symbol.upper()
-    sig       = signal.upper()
-    macd_norm = macd.lower() if macd else None
 
-    results = {}
+def _parse_row(row) -> dict:
+    """Converteert query-rij naar dict met n/avg_1h/avg_4h/win_pct_1h."""
+    if not row or row[0] is None:
+        return None
+    n = int(row[0])
+    avg_1h = float(row[1]) if row[1] is not None else None
+    avg_4h = float(row[2]) if row[2] is not None else None
+    win1h  = float(row[3]) if row[3] is not None else None
+    return {"n": n, "avg_1h": avg_1h, "avg_4h": avg_4h, "win_pct_1h": win1h}
 
-    # ── Niveau 1: Generieke setup (signaal + RSI + MACD + ADX) ──────────────
-    if rsi_zone and macd_norm and adx_str is not None:
+
+def _signal_ctx_recency(sym: str, sig: str) -> dict:
+    """Optioneel: recente data uit signal_context (SQLite) als correctielaag."""
+    try:
+        con = sqlite3.connect(DB_PATH)
         row = con.execute("""
             SELECT COUNT(*) as n,
-                ROUND(AVG(sp.pnl_1h_pct),3) as avg_1h,
-                ROUND(AVG(sp.pnl_4h_pct),3) as avg_4h,
-                ROUND(100.0*SUM(CASE WHEN sp.pnl_1h_pct>0 THEN 1 ELSE 0 END)/COUNT(*),1) as win1h
-            FROM signal_context sc
-            JOIN signal_performance sp ON sp.id = sc.signal_perf_id
-            WHERE sp.pnl_1h_pct IS NOT NULL
-              AND sc.signal = ?
-              AND CASE WHEN sc.rsi_1h<35 THEN 'oversold'
-                       WHEN sc.rsi_1h<50 THEN 'mid-low'
-                       WHEN sc.rsi_1h<65 THEN 'mid-high'
-                       ELSE 'overbought' END = ?
-              AND sc.macd_signal = ?
-              AND sc.adx_strong = ?
-        """, (sig, rsi_zone, macd_norm, adx_str)).fetchone()
-        if row and row[0] >= MIN_N_VERDICT:
-            n, avg_1h, avg_4h, win1h = row
-            results["generiek"] = {
-                "n": n, "avg_1h": avg_1h, "avg_4h": avg_4h,
-                "win_pct_1h": win1h,
-                "verdict": _verdict(win1h, avg_1h, n),
-                "confidence": _confidence(n),
-            }
-
-    # ── Niveau 2: Coin-specifiek (signaal + RSI-zone) ────────────────────────
-    if rsi_zone:
-        row = con.execute("""
-            SELECT COUNT(*) as n,
-                ROUND(AVG(sp.pnl_1h_pct),3) as avg_1h,
-                ROUND(AVG(sp.pnl_4h_pct),3) as avg_4h,
-                ROUND(100.0*SUM(CASE WHEN sp.pnl_1h_pct>0 THEN 1 ELSE 0 END)/COUNT(*),1) as win1h
+                ROUND(AVG(sp.pnl_1h_pct), 3) as avg_1h,
+                ROUND(100.0*SUM(CASE WHEN sp.pnl_1h_pct>0 THEN 1 ELSE 0 END)/COUNT(*), 1) as win1h
             FROM signal_context sc
             JOIN signal_performance sp ON sp.id = sc.signal_perf_id
             WHERE sp.pnl_1h_pct IS NOT NULL
               AND sc.symbol = ?
               AND sc.signal = ?
-              AND CASE WHEN sc.rsi_1h<35 THEN 'oversold'
-                       WHEN sc.rsi_1h<50 THEN 'mid-low'
-                       WHEN sc.rsi_1h<65 THEN 'mid-high'
-                       ELSE 'overbought' END = ?
-        """, (sym, sig, rsi_zone)).fetchone()
-        if row and row[0] >= MIN_N_COIN:
-            n, avg_1h, avg_4h, win1h = row
-            results["coin_rsi"] = {
-                "n": n, "avg_1h": avg_1h, "avg_4h": avg_4h,
-                "win_pct_1h": win1h,
-                "verdict": _verdict(win1h, avg_1h, n),
-                "confidence": _confidence(n),
-            }
+        """, (sym, sig)).fetchone()
+        con.close()
+        if row and row[0] >= 5:
+            return {"n": int(row[0]), "avg_1h": row[1], "win_pct_1h": row[2]}
+    except Exception:
+        pass
+    return None
 
-    # ── Niveau 3: Alleen coin (fallback als weinig data) ─────────────────────
-    row = con.execute("""
-        SELECT COUNT(*) as n,
-            ROUND(AVG(sp.pnl_1h_pct),3) as avg_1h,
-            ROUND(AVG(sp.pnl_4h_pct),3) as avg_4h,
-            ROUND(100.0*SUM(CASE WHEN sp.pnl_1h_pct>0 THEN 1 ELSE 0 END)/COUNT(*),1) as win1h
-        FROM signal_context sc
-        JOIN signal_performance sp ON sp.id = sc.signal_perf_id
-        WHERE sp.pnl_1h_pct IS NOT NULL
-          AND sc.symbol = ?
-    """, (sym,)).fetchone()
-    if row and row[0] >= MIN_N_COIN:
-        n, avg_1h, avg_4h, win1h = row
-        results["coin_algemeen"] = {
-            "n": n, "avg_1h": avg_1h, "avg_4h": avg_4h,
-            "win_pct_1h": win1h,
-            "verdict": _verdict(win1h, avg_1h, n),
-            "confidence": _confidence(n),
-        }
 
-    con.close()
+def judge(symbol: str, signal: str, rsi: float = None,
+          macd: str = None, adx: float = None) -> dict:
+    """
+    Geeft een verdict terug voor de gegeven setup.
+    Primair: historical_context (PostgreSQL, 31k+ records, 2022-2026)
+    Supplemental: signal_context (SQLite, recente weken, optioneel)
+    """
+    rsi_zone  = _rsi_zone(rsi)
+    sym       = symbol.upper()
+    sig       = signal.upper()
+    macd_norm = macd.lower() if macd else None
+    adx_trend = (adx >= 25) if adx is not None else None
 
-    # ── Bepaal eindvonnis ────────────────────────────────────────────────────
-    # Prioriteit: generiek (meest specifiek) > coin_rsi > coin_algemeen
-    # Bij conflict: meest specifieke wint, maar meldt het conflict
-    primary_key   = next((k for k in ["generiek","coin_rsi","coin_algemeen"] if k in results), None)
+    results = {}
+
+    # ── Niveau 1: Generieke setup (signal + rsi_zone + macd_richting + adx) ──
+    if rsi_zone and macd_norm and adx_trend is not None:
+        macd_clause = "(macd_hist > 0)" if macd_norm == "bullish" else "(macd_hist <= 0)"
+        adx_clause  = "(adx > 25)" if adx_trend else "(adx <= 25)"
+        row = _hctx_aggregate(
+            f"signal = '{sig}' AND rsi_zone = '{rsi_zone}' "
+            f"AND {macd_clause} AND {adx_clause}"
+        )
+        parsed = _parse_row(row)
+        if parsed and parsed["n"] >= MIN_N_VERDICT:
+            parsed["verdict"]    = _verdict(parsed["win_pct_1h"], parsed["avg_1h"], parsed["n"])
+            parsed["confidence"] = _confidence(parsed["n"])
+            parsed["bron"]       = "historical_context"
+            results["generiek"]  = parsed
+
+    # ── Niveau 2: Coin-specifiek (symbol + signal + rsi_zone) ─────────────────
+    if rsi_zone:
+        row = _hctx_aggregate(
+            f"symbol = '{sym}' AND signal = '{sig}' AND rsi_zone = '{rsi_zone}'"
+        )
+        parsed = _parse_row(row)
+        if parsed and parsed["n"] >= MIN_N_COIN:
+            parsed["verdict"]    = _verdict(parsed["win_pct_1h"], parsed["avg_1h"], parsed["n"])
+            parsed["confidence"] = _confidence(parsed["n"])
+            parsed["bron"]       = "historical_context"
+            results["coin_rsi"]  = parsed
+
+    # ── Niveau 3: Coin-algemeen (symbol + signal) ─────────────────────────────
+    row = _hctx_aggregate(f"symbol = '{sym}' AND signal = '{sig}'")
+    parsed = _parse_row(row)
+    if parsed and parsed["n"] >= MIN_N_COIN:
+        parsed["verdict"]       = _verdict(parsed["win_pct_1h"], parsed["avg_1h"], parsed["n"])
+        parsed["confidence"]    = _confidence(parsed["n"])
+        parsed["bron"]          = "historical_context"
+        results["coin_algemeen"] = parsed
+
+    # ── Recente correctielaag (signal_context, optioneel) ─────────────────────
+    recency = _signal_ctx_recency(sym, sig)
+    if recency:
+        results["recency"] = recency
+
+    # ── Eindvonnis ────────────────────────────────────────────────────────────
+    primary_key   = next((k for k in ["generiek", "coin_rsi", "coin_algemeen"] if k in results), None)
     final_verdict = results[primary_key]["verdict"] if primary_key else "ONBEKEND"
     final_data    = results[primary_key] if primary_key else {}
 
-    # Conflict check
-    verdicts = {k: v["verdict"] for k, v in results.items() if v["verdict"] != "ONBEKEND"}
+    verdicts = {k: v["verdict"] for k, v in results.items()
+                if k != "recency" and v.get("verdict") != "ONBEKEND"}
     conflict = len(set(verdicts.values())) > 1
 
     reden_parts = []
     if "generiek" in results:
         g = results["generiek"]
+        adx_label = "trend" if adx_trend else "range"
         reden_parts.append(
-            f"Setup [{sig}+{rsi_zone}+MACD:{macd_norm}+ADX:{'trend' if adx_str else 'range'}]: "
+            f"Setup [{sig}+{rsi_zone}+MACD:{macd_norm}+ADX:{adx_label}]: "
             f"n={g['n']}, avg_1h={g['avg_1h']}%, win%={g['win_pct_1h']} → {g['verdict']}"
         )
     if "coin_rsi" in results:
         c = results["coin_rsi"]
         reden_parts.append(
-            f"{sym} specifiek [{sig}+{rsi_zone}]: "
+            f"{sym} [{sig}+{rsi_zone}]: "
             f"n={c['n']}, avg_1h={c['avg_1h']}%, win%={c['win_pct_1h']} → {c['verdict']}"
         )
     if "coin_algemeen" in results:
         ca = results["coin_algemeen"]
         reden_parts.append(
-            f"{sym} algemeen: n={ca['n']}, avg_1h={ca['avg_1h']}%, win%={ca['win_pct_1h']} → {ca['verdict']}"
+            f"{sym} algemeen [{sig}]: "
+            f"n={ca['n']}, avg_1h={ca['avg_1h']}%, win%={ca['win_pct_1h']} → {ca['verdict']}"
+        )
+    if recency:
+        reden_parts.append(
+            f"Recente data ({recency['n']} trades): "
+            f"avg_1h={recency['avg_1h']}%, win%={recency['win_pct_1h']}"
         )
     if not reden_parts:
         reden_parts.append("Onvoldoende historische data voor dit symbool/setup.")
-
     if conflict:
         reden_parts.append("⚠️  Niveaus conflicteren — meest specifieke wint.")
 
     return {
-        "symbol":       sym,
-        "signal":       sig,
-        "rsi":          rsi,
-        "rsi_zone":     rsi_zone,
-        "macd":         macd_norm,
-        "adx":          adx,
-        "adx_strong":   adx_str,
-        "verdict":      final_verdict,
-        "confidence":   final_data.get("confidence", "laag"),
-        "n":            final_data.get("n", 0),
-        "avg_1h":       final_data.get("avg_1h"),
-        "avg_4h":       final_data.get("avg_4h"),
-        "win_pct_1h":   final_data.get("win_pct_1h"),
-        "conflict":     conflict,
-        "levels":       results,
-        "reden":        " | ".join(reden_parts),
+        "symbol":     sym,
+        "signal":     sig,
+        "rsi":        rsi,
+        "rsi_zone":   rsi_zone,
+        "macd":       macd_norm,
+        "adx":        adx,
+        "adx_strong": adx_trend,
+        "verdict":    final_verdict,
+        "confidence": final_data.get("confidence", "laag"),
+        "n":          final_data.get("n", 0),
+        "avg_1h":     final_data.get("avg_1h"),
+        "avg_4h":     final_data.get("avg_4h"),
+        "win_pct_1h": final_data.get("win_pct_1h"),
+        "conflict":   conflict,
+        "levels":     results,
+        "reden":      " | ".join(reden_parts),
     }
 
 
@@ -242,7 +269,7 @@ if __name__ == "__main__":
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--signal", required=True)
     parser.add_argument("--rsi",    type=float, default=None)
-    parser.add_argument("--macd",   default=None, choices=["bullish","bearish"])
+    parser.add_argument("--macd",   default=None, choices=["bullish", "bearish"])
     parser.add_argument("--adx",    type=float, default=None)
     parser.add_argument("--json",   action="store_true", help="Output als JSON")
     args = parser.parse_args()
@@ -260,13 +287,13 @@ if __name__ == "__main__":
         print(f"{'='*55}")
         print(f"  Verdict    : {label.get(result['verdict'], result['verdict'])}")
         print(f"  Confidence : {result['confidence']}  (n={result['n']})")
-        if result['avg_1h'] is not None:
+        if result["avg_1h"] is not None:
             print(f"  Avg 1h PnL : {result['avg_1h']}%")
-        if result['avg_4h'] is not None:
+        if result["avg_4h"] is not None:
             print(f"  Avg 4h PnL : {result['avg_4h']}%")
-        if result['win_pct_1h'] is not None:
+        if result["win_pct_1h"] is not None:
             print(f"  Win% 1h    : {result['win_pct_1h']}%")
         print(f"\n  Onderbouwing:")
-        for r in result['reden'].split(" | "):
+        for r in result["reden"].split(" | "):
             print(f"    {r}")
         print()

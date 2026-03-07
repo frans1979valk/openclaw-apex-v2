@@ -1441,11 +1441,13 @@ CREATE TABLE IF NOT EXISTS historical_context (
     stoch_rsi_d REAL,
     volume_ratio REAL,
     atr         REAL,
+    btc_regime  TEXT,
     enriched_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_hctx_symbol  ON historical_context(symbol);
-CREATE INDEX IF NOT EXISTS idx_hctx_signal  ON historical_context(signal);
-CREATE INDEX IF NOT EXISTS idx_hctx_rsi     ON historical_context(rsi);
+CREATE INDEX IF NOT EXISTS idx_hctx_symbol     ON historical_context(symbol);
+CREATE INDEX IF NOT EXISTS idx_hctx_signal     ON historical_context(signal);
+CREATE INDEX IF NOT EXISTS idx_hctx_rsi        ON historical_context(rsi);
+CREATE INDEX IF NOT EXISTS idx_hctx_btcregime  ON historical_context(btc_regime);
 """
 
 _enrich_running = False
@@ -1489,6 +1491,23 @@ def _run_historical_enrich():
         """)
         inserted = cur.rowcount
         conn.commit()
+
+        # Vul btc_regime: bull als BTC ema_bull=true op zelfde candle_ts, anders bear
+        cur.execute("""
+            UPDATE historical_context hc
+            SET btc_regime = CASE
+                WHEN btc.ema_bull = true THEN 'bull'
+                ELSE 'bear'
+            END
+            FROM indicators_data btc
+            WHERE btc.symbol   = 'BTCUSDT'
+              AND btc.interval = '1h'
+              AND btc.ts::timestamptz = hc.candle_ts::timestamptz
+              AND hc.btc_regime IS NULL
+        """)
+        regime_updated = cur.rowcount
+        conn.commit()
+        log.info(f"[historical-enrich] btc_regime gezet voor {regime_updated} rijen")
 
         cur.execute("SELECT COUNT(*) FROM historical_context")
         total = cur.fetchone()[0]

@@ -558,35 +558,76 @@ python3 coin_watcher.py --enrich          # trigger enrichment
 
 ## 11. AI-vrije Kernarchitectuur
 
-De datafundering is nu sterk genoeg om de trading intelligence **primair statistisch en regelgedreven** te maken. Externe AI hoeft niet in de realtime beslisloop en kan beperkt blijven tot rapportage, research en samenvatting.
+> **Dit zijn geharde principes, geen aanbevelingen.**
+> Ze gelden voor alle toekomstige wijzigingen aan het platform.
 
-### Principe
+De datafundering is sterk genoeg om de trading intelligence **primair statistisch en regelgedreven** te maken. Externe AI hoeft niet in de realtime beslisloop en kan beperkt blijven tot rapportage, research en samenvatting.
+
+### Kernprincipes (niet onderhandelbaar)
+
+**1. Geen AI in de realtime beslisloop**
+
+De volgende componenten mogen nooit afhankelijk worden van een LLM-call (Claude, Kimi, GPT, of andere):
+- `apex_engine` — signaalfiltering, stoploss, positionering
+- `setup_judge` — historische verdict op setup
+- `signal_blacklist` — coin/signal blacklist op PnL
+- `coin_watcher` — nieuwe coin detectie
+- `context_collector` — indicator snapshot
+
+Als een van deze componenten faalt doordat een AI-service niet beschikbaar is, is dat een architectuurfout.
+
+**2. Fail-safe als AI uitvalt**
+
+Als Jojo1 (openclaw_gateway) of Kimi (tg_discuss_bot) niet beschikbaar is:
+- `apex_engine` blijft gewoon draaien — geen handshake vereist
+- `setup_judge` blijft werkzaam — alleen PostgreSQL vereist
+- Filters en blacklist blijven actief — volledig regelgedreven
+- Telegram rapportage stopt — dit is acceptabel (informatie, geen executie)
+
+Het platform is zo ontworpen dat **uitval van alle AI-services geen impact heeft op orderuitvoering**.
+
+**3. Geen directe ordercontrole door AI**
+
+Claude (Jojo1) en Kimi hebben **geen directe toegang** tot order-executie endpoints:
+- Zij mogen `control_api` bevelen geven via parameters (config_overrides)
+- Zij mogen signalen analyseren en rapporteren
+- Zij mogen **nooit** direct `POST /trade`, `POST /order` of gelijkwaardige endpoints aanroepen
+- Alle orders lopen uitsluitend via `apex_engine` → `blofin_client`
+
+De scheiding: AI = advieslaag / statistiek = beslislaag / apex_engine = executielaag.
+
+**4. Datastromen zijn uni-directioneel**
 
 ```
-REALTIME BESLISLOOP (geen AI)          AI LAAG (asynchroon)
-─────────────────────────────          ────────────────────
+REALTIME BESLISLOOP (geen AI)          AI LAAG (asynchroon, read-only)
+─────────────────────────────          ────────────────────────────────
 indicators_data                        Jojo1 (OpenClaw)
-      ↓                                  → marktanalyse
-historical_context                       → samenvatting
-      ↓                                  → uitleg aan Frans
+      ↓                                  → marktanalyse (leest data)
+historical_context                       → samenvatting voor Frans
+      ↓                                  → config_overrides voorstellen
 setup_judge (pure SQL)                 Kimi2 (nachtanalyse)
-      ↓                                  → regime advies
-apex_engine filter                       → strategie bias
-      ↓                                Geen van beide
-trading beslissing                       heeft directe controle
-                                         over orders
+      ↓                                  → regime advies (leest data)
+apex_engine filter                       → strategie bias rapporteren
+      ↓
+trading beslissing                     ← AI heeft hier geen schrijftoegang
+      ↓
+blofin_client → exchange
 ```
 
-### Wat de statistiek overneemt
+**5. Statistiek gaat boven AI-oordeel**
+
+Als `setup_judge` (historische data, n≥10) SKIP zegt voor een setup, dan geldt dat SKIP — ongeacht wat Jojo1 of Kimi rapporteert. AI-signalen zijn informatief, niet bindend.
+
+### Wat de statistiek beslist
 
 | Beslissing | Hoe | AI nodig? |
 |---|---|---|
 | Is deze setup historisch winstgevend? | historical_context aggregaat (31k records) | Nee |
 | Welke coins presteren het slechtst? | signal_analyzer per coin | Nee |
 | Is de markt trending of ranging? | ADX drempel + EMA alignment | Nee |
-| Is BTC in bull of bear regime? | EMA200 check (indicatoren_data) | Nee |
+| Is BTC in bull of bear regime? | btc_regime in historical_context (EMA200) | Nee |
 | Welke signalen zijn blacklist-kandidaat? | PnL < drempel + min n | Nee |
-| Wanneer is een coin SKIP? | setup_judge — 3 niveaus | Nee |
+| Wanneer is een coin SKIP? | setup_judge — 3 niveaus, 31k records | Nee |
 
 ### Wat AI wél doet
 
@@ -597,21 +638,22 @@ trading beslissing                       heeft directe controle
 | Marktuitleg op verzoek | tg_discuss_bot (Kimi) | Op aanvraag |
 | Jojo1 operator beslissingen | openclaw_gateway (Claude) | Op events |
 | Research bij bijzondere events | Jojo1 Research Agent | Op aanvraag |
+| Config voorstel (drempels aanpassen) | Jojo1 → control_api proposals | Op aanvraag |
 
 ### Gevolg voor systeemkosten
 
-Alle realtime filtering draait op eigen hardware, zonder API-calls:
-- `setup_judge` → pure SQL op PostgreSQL
-- `signal_analyzer` → pure SQL aggregaties
-- `context_collector` → REST call naar interne service (jojo_analytics)
-- `coin_watcher` → REST call naar interne service (indicator_engine)
+Alle realtime filtering draait op eigen hardware, zonder externe API-calls:
+- `setup_judge` → pure SQL op PostgreSQL (intern)
+- `signal_analyzer` → pure SQL aggregaties (intern)
+- `context_collector` → REST call naar jojo_analytics (intern)
+- `coin_watcher` → REST call naar indicator_engine (intern)
 
 AI-kosten (Anthropic credits) worden alleen gemaakt bij:
 1. Jojo1 reageert op Telegram bericht van Frans
 2. Jojo1 voert een actieve analyse uit (Research/Risk Agent)
 3. Kimi2 nachtrapport (Moonshot API, goedkoper)
 
-**Conclusie:** het platform kan technisch blijven draaien zonder AI-credits. AI verbetert de kwaliteit van beslissingen en communicatie, maar de kernbescherming (filters, skip-regels, blacklist) is volledig statistisch en regelgedreven.
+**Conclusie:** het platform draait volledig zonder AI-credits. AI verbetert de kwaliteit van beslissingen en communicatie, maar de kernbescherming (filters, skip-regels, blacklist, btc_regime) is volledig statistisch en regelgedreven en faalt nooit door AI-uitval.
 
 ---
 
