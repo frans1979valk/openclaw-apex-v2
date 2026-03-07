@@ -241,13 +241,29 @@ docker compose up -d
 | Cumulative PnL analysis | ✅ Live |
 | Telegram trade alerts | 🔧 Planned |
 | Short signals | 🔧 Planned |
-| Real money trading | ❌ Not enabled — paper only |
+| Real money trading | ⚙️ Supported — disabled by default (see below) |
+
+---
+
+## Live Trading (optional)
+
+The platform is designed for **paper trading by default**, but live trading on BloFin is supported.
+
+To enable live trading:
+
+1. Set `ALLOW_LIVE=true` in `secrets/apex.env`
+2. Replace the BloFin demo API keys with your **live account** API keys
+3. Restart the engine: `docker compose restart apex_engine`
+
+> **Warning:** Live trading uses real money. The platform is still in test phase. Use at your own risk. Start with small position sizes and monitor closely. The authors are not responsible for financial losses.
+
+The AI operator (Jojo1) and all safety mechanisms (Gatekeeper, PARAM_BOUNDS, OTP confirmation) remain active in live mode.
 
 ---
 
 ## License
 
-MIT — free to use, study and build upon. Not financial advice. Paper trading only.
+MIT — free to use, study and build upon. Not financial advice.
 
 ---
 
