@@ -1,13 +1,13 @@
 # OpenClaw Apex — AI Crypto Trading Platform v2
 
-> **Paper trading** research platform with AI-driven setup scoring, live signal detection, historical backtesting, interactive charts, and an automated paper trading testbot. Built on BloFin demo mode — **no real money at risk.**
+> AI-driven crypto trading platform with setup scoring, live signal detection, historical backtesting, interactive charts, and an automated testbot. Runs in **paper trading mode by default** (BloFin demo) — live trading on BloFin is supported and can be enabled.
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql)](https://postgresql.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)](https://docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-[![Status: Paper Trading](https://img.shields.io/badge/Status-Paper%20Trading-orange)]()
+[![Status: Paper Trading](https://img.shields.io/badge/Status-Paper%20%26%20Live%20Ready-orange)]()
 
 ---
 
