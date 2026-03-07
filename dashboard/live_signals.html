@@ -190,6 +190,10 @@
   <h1 id="h-title"></h1>
   <a class="nav-back" href="setup_intelligence.html" id="h-nav-setup"></a>
   <a class="nav-back" href="index.html" id="h-nav-dash"></a>
+  <div class="lang-toggle">
+    <button class="lang-btn" data-lang="nl" onclick="setLang('nl')">NL</button>
+    <button class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
   <button id="logout-btn" onclick="logout()"></button>
 </header>
 
@@ -570,6 +574,7 @@ function initI18n() {
   document.getElementById("h-nav-setup").textContent = t("nav_setup_intel");
   document.getElementById("h-nav-dash").textContent  = t("nav_dashboard");
   document.getElementById("logout-btn").textContent  = t("nav_logout");
+  initLangButtons();
   document.getElementById("lbl-regime").textContent  = t("btc_regime");
   document.getElementById("lbl-active").textContent  = t("active_signals");
   document.getElementById("lbl-sterk").textContent   = t("sterk_active");

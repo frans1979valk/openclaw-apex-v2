@@ -246,6 +246,10 @@
   <span>&#128202;</span>
   <h1>Setup Intelligence</h1>
   <a class="nav-back" href="index.html">&#8592; Dashboard</a>
+  <div class="lang-toggle">
+    <button class="lang-btn" data-lang="nl" onclick="setLang('nl')">NL</button>
+    <button class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
   <button id="logout-btn" onclick="logout()"></button>
 </header>
 
@@ -734,6 +738,7 @@ async function loadData() {
 
 function initI18n() {
   document.getElementById("logout-btn").textContent = t("nav_logout");
+  initLangButtons();
   document.getElementById("ts-label").textContent = t("loading_price");
   document.getElementById("filter-label").textContent = t("filter_label");
   document.getElementById("filter-all-btn").textContent = t("filter_all");

@@ -112,10 +112,14 @@
   <h1>OpenClaw Apex — Live Dashboard</h1>
   <span id="status-dot"></span>
   <span id="last-update"></span>
-  <a href="live_signals.html" style="font-size:.78rem;color:#9ecca4;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:8px;white-space:nowrap" title="Live Signalen">&#9889; Live</a>
-  <a href="setup_intelligence.html" style="font-size:.78rem;color:#58a6ff;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="Setup Intelligence">&#128202; Setup Intel</a>
-  <a href="bot_positions.html" style="font-size:.78rem;color:#3fb950;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="Bot Posities">&#129302; Bot</a>
-  <a href="sterk_quality.html" style="font-size:.78rem;color:#d29922;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="STERK Kwaliteit">&#128200; Kwaliteit</a>
+  <a id="ix-nav-live" href="live_signals.html" style="font-size:.78rem;color:#9ecca4;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:8px;white-space:nowrap"></a>
+  <a id="ix-nav-setup" href="setup_intelligence.html" style="font-size:.78rem;color:#58a6ff;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap"></a>
+  <a id="ix-nav-bot" href="bot_positions.html" style="font-size:.78rem;color:#3fb950;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap"></a>
+  <a id="ix-nav-quality" href="sterk_quality.html" style="font-size:.78rem;color:#d29922;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap"></a>
+  <div class="lang-toggle">
+    <button class="lang-btn" data-lang="nl" onclick="setLang('nl')">NL</button>
+    <button class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
   <button id="logout-btn" onclick="logout()"></button>
 </header>
 
@@ -178,7 +182,7 @@ function crashColor(score) {
 }
 
 function renderCoins(coins) {
-  if (!coins || !coins.length) return "<p style='color:#8b949e;font-size:.85rem'>Geen coins geladen...</p>";
+  if (!coins || !coins.length) return `<p style='color:#8b949e;font-size:.85rem'>${t("ix_no_coins")}</p>`;
   return coins.map(c => {
     const crash = c.pre_crash_score ?? null;
     const crashBar = crash != null ? `
@@ -217,14 +221,14 @@ function renderCoins(coins) {
 }
 
 function renderFlash(triggers) {
-  if (!triggers || !triggers.length) return "<p style='color:#8b949e;font-size:.82rem'>Geen flash crashes (1u)</p>";
-  return triggers.map(t =>
-    `<div class="flash-row">⚡ ${t.symbol} — daling ${t.drop_pct}% | prijs $${fmt(t.price,4)}</div>`
+  if (!triggers || !triggers.length) return `<p style='color:#8b949e;font-size:.82rem'>${t("ix_no_flash")}</p>`;
+  return triggers.map(tr =>
+    `<div class="flash-row">⚡ ${tr.symbol} — ${t("ix_flash_drop")} ${tr.drop_pct}% | ${t("ix_flash_price")} $${fmt(tr.price,4)}</div>`
   ).join("");
 }
 
 function renderAgent(agent) {
-  if (!agent || !agent.verdict) return "<p style='color:#8b949e;font-size:.82rem'>Nog niet gerund...</p>";
+  if (!agent || !agent.verdict) return `<p style='color:#8b949e;font-size:.82rem'>${t("ix_agent_not_run")}</p>`;
   const v = agent.verdict;
   const s = agent.strategy || {};
   const r = agent.risk || {};
@@ -232,12 +236,12 @@ function renderAgent(agent) {
   const cls = beslissing === "GO" ? "verdict-go" : "verdict-nogo";
   return `
     <div class="agent-block">
-      <div>Beslissing: <span class="${cls}">${beslissing}</span>
-        ${v.vertrouwen_pct ? `<span style="color:#8b949e">(${v.vertrouwen_pct}% vertrouwen)</span>` : ""}
+      <div>${t("ix_decision")} <span class="${cls}">${beslissing}</span>
+        ${v.vertrouwen_pct ? `<span style="color:#8b949e">(${v.vertrouwen_pct}${t("ix_confidence")})</span>` : ""}
       </div>
       ${v.samenvatting ? `<div style="margin-top:6px">${v.samenvatting}</div>` : ""}
-      ${s.strategy ? `<div style="margin-top:6px;color:#58a6ff">Strategie: ${s.strategy}</div>` : ""}
-      ${r.reden ? `<div style="margin-top:4px;color:#8b949e">Risk: ${r.reden}</div>` : ""}
+      ${s.strategy ? `<div style="margin-top:6px;color:#58a6ff">${t("ix_strategy_lbl")} ${s.strategy}</div>` : ""}
+      ${r.reden ? `<div style="margin-top:4px;color:#8b949e">${t("ix_risk_lbl")} ${r.reden}</div>` : ""}
     </div>`;
 }
 
@@ -246,15 +250,14 @@ function pnlColor(v) {
   return v >= 0 ? "#3fb950" : "#f85149";
 }
 function pnlFmt(v) {
-  if (v == null) return "<span style='color:#8b949e'>wachten...</span>";
+  if (v == null) return `<span style='color:#8b949e'>${t("ix_waiting")}</span>`;
   const sign = v >= 0 ? "+" : "";
   return `<span style='color:${pnlColor(v)};font-weight:600'>${sign}${v.toFixed(2)}%</span>`;
 }
 
 function renderPerformance(rows) {
-  if (!rows || !rows.length) return "<p style='color:#8b949e;font-size:.82rem'>Nog geen signalen geëvalueerd. Komt vanzelf na 15 minuten...</p>";
+  if (!rows || !rows.length) return `<p style='color:#8b949e;font-size:.82rem'>${t("ix_no_perf")}</p>`;
 
-  // Statistieken
   const closed = rows.filter(r => r.pnl_1h_pct != null);
   const wins   = closed.filter(r => r.pnl_1h_pct > 0).length;
   const winRate = closed.length ? Math.round(wins / closed.length * 100) : null;
@@ -265,15 +268,15 @@ function renderPerformance(rows) {
     html += `<div style="display:flex;gap:16px;margin-bottom:12px;padding:10px;background:#0d1117;border-radius:8px">
       <div style="text-align:center">
         <div style="font-size:1.3rem;font-weight:700;color:${winRate>=50?'#3fb950':'#f85149'}">${winRate}%</div>
-        <div style="font-size:0.7rem;color:#8b949e">Win-rate (1u)</div>
+        <div style="font-size:0.7rem;color:#8b949e">${t("ix_winrate_1h")}</div>
       </div>
       <div style="text-align:center">
         <div style="font-size:1.3rem;font-weight:700;color:${avgPnl>=0?'#3fb950':'#f85149'}">${avgPnl>=0?'+':''}${avgPnl}%</div>
-        <div style="font-size:0.7rem;color:#8b949e">Gem. P&L (1u)</div>
+        <div style="font-size:0.7rem;color:#8b949e">${t("ix_avg_pnl_1h")}</div>
       </div>
       <div style="text-align:center">
         <div style="font-size:1.3rem;font-weight:700;color:#c9d1d9">${closed.length}</div>
-        <div style="font-size:0.7rem;color:#8b949e">Geëvalueerd</div>
+        <div style="font-size:0.7rem;color:#8b949e">${t("ix_evaluated")}</div>
       </div>
     </div>`;
   }
@@ -292,9 +295,9 @@ function renderPerformance(rows) {
         <span style="color:#8b949e;font-size:.7rem">${date} ${time}</span>
       </div>
       <div style="display:flex;gap:12px;margin-top:3px">
-        <span style="color:#8b949e">15m: ${pnlFmt(r.pnl_15m_pct)}</span>
-        <span style="color:#8b949e">1u: ${pnlFmt(r.pnl_1h_pct)}</span>
-        <span style="color:#8b949e">4u: ${pnlFmt(r.pnl_4h_pct)}</span>
+        <span style="color:#8b949e">${t("ix_perf_15m")} ${pnlFmt(r.pnl_15m_pct)}</span>
+        <span style="color:#8b949e">${t("ix_perf_1h")} ${pnlFmt(r.pnl_1h_pct)}</span>
+        <span style="color:#8b949e">${t("ix_perf_4h")} ${pnlFmt(r.pnl_4h_pct)}</span>
         ${r.status === 'open' ? '<span style="color:#f0883e;font-size:.7rem">⏳ open</span>' : ''}
       </div>
     </div>`;
@@ -303,7 +306,7 @@ function renderPerformance(rows) {
 }
 
 function renderBalance(b) {
-  if (!b) return "<p style='color:#8b949e;font-size:.82rem'>Balans niet beschikbaar.</p>";
+  if (!b) return `<p style='color:#8b949e;font-size:.82rem'>${t("ix_balance_na")}</p>`;
   const bal      = b.balance || 1000;
   const start    = b.demo_start_usdt || 1000;
   const pnl      = b.pnl_total_usdt ?? (bal - start);
@@ -314,16 +317,15 @@ function renderBalance(b) {
   const balPct   = Math.min(100, (bal / Math.max(peak, start)) * 100);
 
   return `
-  <!-- Grote balans weergave -->
   <div style='display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:16px;
               padding:16px;background:#0d1117;border-radius:10px;border:1px solid #30363d'>
     <div>
-      <div style='font-size:.72rem;color:#8b949e;margin-bottom:4px'>💰 Huidige balans (Demo USDT)</div>
+      <div style='font-size:.72rem;color:#8b949e;margin-bottom:4px'>${t("ix_current_balance")}</div>
       <div style='font-size:2rem;font-weight:800;color:#e6edf3;line-height:1'>
         $${bal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
       </div>
       <div style='font-size:.8rem;margin-top:4px;color:${pnlClr};font-weight:600'>
-        ${pnl>=0?"+":""}$${pnl.toFixed(2)} (${pnlPct>=0?"+":""}${pnlPct.toFixed(2)}%) t.o.v. $${start.toLocaleString()}
+        ${pnl>=0?"+":""}$${pnl.toFixed(2)} (${pnlPct>=0?"+":""}${pnlPct.toFixed(2)}%) ${t("ix_vs")} $${start.toLocaleString()}
       </div>
       <div style='margin-top:8px;background:#21262d;border-radius:4px;height:6px;width:200px'>
         <div style='width:${balPct}%;height:6px;border-radius:4px;background:${pnlClr};transition:width .6s'></div>
@@ -332,35 +334,35 @@ function renderBalance(b) {
     <div style='margin-left:auto;display:flex;gap:16px;flex-wrap:wrap'>
       <div style='text-align:center'>
         <div style='font-size:1.4rem;font-weight:700;color:${winClr}'>${b.win_rate_pct??0}%</div>
-        <div style='font-size:.68rem;color:#8b949e'>Win-rate</div>
+        <div style='font-size:.68rem;color:#8b949e'>${t("col_winrate")}</div>
       </div>
       <div style='text-align:center'>
         <div style='font-size:1.4rem;font-weight:700;color:#c9d1d9'>${b.total_orders??0}</div>
-        <div style='font-size:.68rem;color:#8b949e'>Orders</div>
+        <div style='font-size:.68rem;color:#8b949e'>${t("ix_orders")}</div>
       </div>
       <div style='text-align:center'>
         <div style='font-size:1.4rem;font-weight:700;color:#58a6ff'>$${peak.toFixed(0)}</div>
-        <div style='font-size:.68rem;color:#8b949e'>Piek balans</div>
+        <div style='font-size:.68rem;color:#8b949e'>${t("ix_peak_balance")}</div>
       </div>
     </div>
   </div>
   <div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px'>
     <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
       <div style='font-size:1rem;font-weight:700;color:${(b.avg_pnl_1h_pct||0)>=0?"#3fb950":"#f85149"}'>${(b.avg_pnl_1h_pct||0)>=0?"+":""}${(b.avg_pnl_1h_pct||0).toFixed(3)}%</div>
-      <div style='font-size:.68rem;color:#8b949e'>Gem. P&L na 1u</div>
+      <div style='font-size:.68rem;color:#8b949e'>${t("ix_avg_pnl_1h_label")}</div>
     </div>
     <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
       <div style='font-size:1rem;font-weight:700;color:#c9d1d9'>${b.signals_evaluated??0}</div>
-      <div style='font-size:.68rem;color:#8b949e'>Signalen geëvalueerd</div>
+      <div style='font-size:.68rem;color:#8b949e'>${t("ix_signals_evaluated")}</div>
     </div>
     <div style='background:#0d1117;border-radius:8px;padding:8px 14px;text-align:center'>
       <div style='font-size:1rem;font-weight:700;color:#8b949e'>$${((b.total_volume_usdt||0)).toLocaleString("en-US",{maximumFractionDigits:0})}</div>
-      <div style='font-size:.68rem;color:#8b949e'>Volume verhandeld</div>
+      <div style='font-size:.68rem;color:#8b949e'>${t("ix_volume_traded")}</div>
     </div>
   </div>
   ${b.recent_orders && b.recent_orders.length ? `
   <div>
-    <div style='font-size:.75rem;color:#8b949e;margin-bottom:6px'>Recente orders:</div>
+    <div style='font-size:.75rem;color:#8b949e;margin-bottom:6px'>${t("ix_recent_orders")}</div>
     ${b.recent_orders.slice(0,6).map(o => {
       const pnlO = o.pnl_usdt ?? null;
       const pnlC = pnlO == null ? "#8b949e" : pnlO >= 0 ? "#3fb950" : "#f85149";
@@ -376,7 +378,7 @@ function renderBalance(b) {
 
 function safeRender(fn, fallback) {
   try { return fn(); } catch(e) {
-    return `<p style='color:#f85149;font-size:.75rem'>⚠️ Weergavefout: ${e.message}</p>`;
+    return `<p style='color:#f85149;font-size:.75rem'>${t("ix_render_error")} ${e.message}</p>`;
   }
 }
 
@@ -408,9 +410,8 @@ function buildHistButtons(coins) {
   const dd = document.getElementById("hist-dropdown");
   if (!dd || dd.dataset.built === "1") return;
   dd.dataset.built = "1";
-  // Verwijder placeholder en voeg echte coins toe
   const firstOpt = dd.options[0];
-  firstOpt.textContent = "── Gevolgd door Kimi ──";
+  firstOpt.textContent = t("ix_hist_followed");
   coins.forEach(c => {
     const opt = document.createElement("option");
     opt.value = c.symbol;
@@ -441,10 +442,10 @@ async function runHistBacktest(symbol) {
   if (histRunning) return;
   histRunning = true;
   const res = document.getElementById("hist-result");
-  const periodLabel = histMonths === 0 ? "MAX (alle beschikbare data)" : `${histMonths} maanden`;
+  const periodLabel = histMonths === 0 ? t("ix_hist_max") : t("ix_hist_months").replace("{n}", histMonths);
   res.innerHTML = `<div style='display:flex;align-items:center;gap:10px;color:#58a6ff;font-size:.85rem'>
     <div class='spinner' style='width:20px;height:20px;margin:0'></div>
-    ${symbol} analyseren: ${periodLabel} × 1h candles... even geduld (~15-60s voor MAX).
+    ${t("ix_analyzing").replace("{sym}", symbol).replace("{period}", periodLabel)}
   </div>`;
   document.querySelectorAll(".hist-btn").forEach(b => b.disabled = true);
 
@@ -452,7 +453,7 @@ async function runHistBacktest(symbol) {
     const data = await fetchJSON(`${API}/backtest/historical/${symbol}?interval=1h&months=${histMonths}`);
     renderHistResult(symbol, data);
   } catch(e) {
-    res.innerHTML = `<p style='color:#f85149'>⚠️ Fout: ${e.message}</p>`;
+    res.innerHTML = `<p style='color:#f85149'>⚠️ ${t("error")}: ${e.message}</p>`;
   } finally {
     histRunning = false;
     document.querySelectorAll(".hist-btn").forEach(b => b.disabled = false);
@@ -469,40 +470,39 @@ function renderHistResult(symbol, d) {
   const overall = d.overall_1h || {};
   const by = d.by_signal || {};
 
-  const periodeStr = d.months === 0 ? "MAX (volledige geschiedenis)" : `${d.months} maanden`;
+  const periodeStr = d.months === 0 ? t("ix_hist_max_full") : t("ix_hist_months").replace("{n}", d.months);
   const filterSig  = histSigFilter || "";
-  // Als er een filter actief is, gebruik de stats van dat signaal
   const showStats  = filterSig && by[filterSig] ? by[filterSig]["1h"] : overall;
-  const filterLabel = filterSig ? ` — gefilterd op ${filterSig === "PERFECT_DAY" ? "⭐ Perfect Day" : filterSig}` : "";
+  const filterLabel = filterSig ? ` — ${t("ix_filtered_on")} ${filterSig === "PERFECT_DAY" ? "⭐ Perfect Day" : filterSig}` : "";
   let html = `
   <div style='margin-bottom:10px;font-size:.8rem;color:#8b949e'>
-    ${symbol} | ${d.candles} candles | ${d.signals_found} signalen gevonden | periode: ${periodeStr} × 1h${filterLabel}
+    ${symbol} | ${d.candles} candles | ${d.signals_found} ${t("ix_signals")} | ${periodeStr} × 1h${filterLabel}
   </div>
 
-  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin-bottom:6px'>Resultaat na 1 uur:</div>
+  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin-bottom:6px'>${t("ix_result_1h")}</div>
   <div class='stat-grid'>
     <div class='stat-box'>
       <div class='stat-val' style='color:${sigColor((showStats.win_rate_pct||0)-50)}'>${showStats.win_rate_pct ?? "—"}%</div>
-      <div class='stat-lbl'>Win-rate</div>
+      <div class='stat-lbl'>${t("col_winrate")}</div>
     </div>
     <div class='stat-box'>
       <div class='stat-val' style='color:${sigColor(showStats.avg_pnl_pct)}'>${(showStats.avg_pnl_pct >= 0 ? "+" : "") + (showStats.avg_pnl_pct ?? "—")}%</div>
-      <div class='stat-lbl'>Gem. P&amp;L</div>
+      <div class='stat-lbl'>${t("col_avg_pnl")}</div>
     </div>
     <div class='stat-box'>
       <div class='stat-val' style='color:#c9d1d9'>${showStats.count ?? "—"}</div>
-      <div class='stat-lbl'>Signalen</div>
+      <div class='stat-lbl'>${t("ix_signals")}</div>
     </div>
   </div>
 
-  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin:14px 0 6px'>Per signaaltype:</div>
+  <div style='font-size:.78rem;font-weight:600;color:#c9d1d9;margin:14px 0 6px'>${t("ix_per_signal_type")}</div>
   <div style='overflow-x:auto'>
   <table style='width:100%;border-collapse:collapse;font-size:.75rem'>
     <thead>
       <tr style='color:#8b949e;border-bottom:1px solid #30363d'>
-        <th style='text-align:left;padding:5px'>Signaal</th>
+        <th style='text-align:left;padding:5px'>${t("col_signal")}</th>
         <th style='text-align:right;padding:5px'>#</th>
-        <th style='text-align:right;padding:5px'>Win% (1h)</th>
+        <th style='text-align:right;padding:5px'>${t("col_win_pct")} (1h)</th>
         <th style='text-align:right;padding:5px'>P&amp;L 1h</th>
         <th style='text-align:right;padding:5px'>P&amp;L 4h</th>
         <th style='text-align:right;padding:5px'>P&amp;L 24h</th>
@@ -529,9 +529,7 @@ function renderHistResult(symbol, d) {
   }
 
   html += `</tbody></table></div>
-  <p style='font-size:.7rem;color:#8b949e;margin-top:10px'>
-    ⚠️ Backtest = historische simulatie. Geen garantie voor toekomstige resultaten.
-  </p>`;
+  <p style='font-size:.7rem;color:#8b949e;margin-top:10px'>${t("ix_backtest_disc")}</p>`;
 
   res.innerHTML = html;
 }
@@ -650,7 +648,7 @@ function renderExchangeCard() {
   const onlineCount = EXCH_ORDER.filter(k => prices[k] != null).length;
 
   if (!onlineCount) {
-    el.innerHTML = "<p style='color:#8b949e;font-size:.82rem'>Laden prijzen...</p>";
+    el.innerHTML = `<p style='color:#8b949e;font-size:.82rem'>${t("ix_loading_prices")}</p>`;
     return;
   }
 
@@ -658,7 +656,7 @@ function renderExchangeCard() {
     const p = prices[ex];
     if (p == null) return `
       <tr><td style="color:#8b949e">${EXCH_LABELS[ex]}</td>
-          <td colspan="2" style="color:#8b949e;text-align:center">— offline —</td></tr>`;
+          <td colspan="2" style="color:#8b949e;text-align:center">${t("ix_offline")}</td></tr>`;
     const diff = consensus ? (p - consensus) / consensus * 100 : 0;
     const diffClr = Math.abs(diff) < 0.05 ? "#8b949e" : diff > 0 ? "#3fb950" : "#f85149";
     const diffStr = `${diff >= 0 ? "+" : ""}${diff.toFixed(3)}%`;
@@ -674,18 +672,18 @@ function renderExchangeCard() {
 
   el.innerHTML = `
     <div style="font-size:.72rem;color:#8b949e;margin-bottom:8px">
-      ${base}/USDT &mdash; gewogen consensus (Coinbase 35% gewicht) &mdash; BloFin is jouw handelsplatform
+      ${t("ix_exch_desc").replace("{base}", base)}
     </div>
     <table class="exch-table">
-      <thead><tr><th>Exchange</th><th>Prijs</th><th>vs Consensus</th></tr></thead>
+      <thead><tr><th>Exchange</th><th>${t("ix_exch_price")}</th><th>${t("ix_exch_vs_consensus")}</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     ${consensus != null ? `<div class="exch-consensus">
-      <span style="color:#8b949e">Gewogen consensus:</span>
+      <span style="color:#8b949e">${t("ix_exch_weighted")}</span>
       <span style="font-weight:700;color:#e6edf3;font-size:1rem">
         $${consensus.toLocaleString("en-US",{minimumFractionDigits:dec,maximumFractionDigits:dec})}
       </span>
-      <span style="color:#8b949e;font-size:.72rem">${onlineCount}/6 online</span>
+      <span style="color:#8b949e;font-size:.72rem">${t("ix_exch_online").replace("{n}", onlineCount)}</span>
       <span style="color:#8b949e;font-size:.68rem;margin-left:auto">
         ${new Date().toLocaleTimeString()}
       </span>
@@ -700,7 +698,7 @@ async function updateExchangeCard() {
     renderExchangeCard();
   } catch(e) {
     const el = document.getElementById("exch-card-body");
-    if (el) el.innerHTML = `<p style='color:#f85149;font-size:.8rem'>⚠️ Fout: ${e.message}</p>`;
+    if (el) el.innerHTML = `<p style='color:#f85149;font-size:.8rem'>⚠️ ${t("error")}: ${e.message}</p>`;
   }
 }
 
@@ -733,7 +731,7 @@ async function renderFromState(state) {
     const ts         = state.ts ? state.ts.slice(0,19).replace("T"," ") : "—";
     const flashCount = (state.flash_triggers||[]).length;
 
-    document.getElementById("last-update").textContent = `⚡ Live: ${now}`;
+    document.getElementById("last-update").textContent = `${t("ix_live_prefix")} ${now}`;
     document.getElementById("status-dot").style.background = "#3fb950";
 
     // Cascade badge
@@ -749,22 +747,22 @@ async function renderFromState(state) {
     const maxCrash = Math.max(0, ...Object.values(crashScores));
     const crashBanner = maxCrash >= 60
       ? `<div style="padding:8px 24px;background:#2b0d0d;border-bottom:1px solid #f85149;color:#f85149;font-size:.8rem;font-weight:600">
-          ⚠️ IJZEREN WET ACTIEF — Pre-crash score ${maxCrash.toFixed(0)}/100. Kooporders geblokkeerd.
+          ${t("ix_iron_law").replace("{score}", maxCrash.toFixed(0))}
          </div>`
       : "";
 
     document.getElementById("app").innerHTML = crashBanner + `
       <div class="grid">
         <div class="card" style="grid-column: span 2">
-          <h2>💰 Demo Account — BloFin Paper Trading</h2>
+          <h2>${t("ix_h_balance")}</h2>
           ${safeRender(() => renderBalance(balData))}
         </div>
         <div class="card" style="grid-column: span 2">
-          <h2>📊 Coin Overzicht — ${ts} UTC</h2>
+          <h2>${t("ix_h_coins")} — ${ts} UTC</h2>
           ${safeRender(() => renderCoins(state.coins))}
         </div>
         <div class="card" style="grid-column: span 2">
-          <h2>🏦 Exchange Vergelijking — Live Prijs per Exchange</h2>
+          <h2>${t("ix_h_exchange")}</h2>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
             <button class="exch-sym-btn active" onclick="switchExchSym('XRPUSDT',this)">XRP</button>
             <button class="exch-sym-btn" onclick="switchExchSym('BTCUSDT',this)">BTC</button>
@@ -772,39 +770,39 @@ async function renderFromState(state) {
             <button class="exch-sym-btn" onclick="switchExchSym('SOLUSDT',this)">SOL</button>
             <button class="exch-sym-btn" onclick="switchExchSym('BNBUSDT',this)">BNB</button>
           </div>
-          <div id="exch-card-body"><p style='color:#8b949e;font-size:.82rem'>Laden...</p></div>
+          <div id="exch-card-body"><p style='color:#8b949e;font-size:.82rem'>${t("loading")}</p></div>
         </div>
         <div class="card">
-          <h2>⚙️ Systeem</h2>
-          <div class="metric"><span>Mode</span><span class="metric-val">${state.mode||"demo"}</span></div>
+          <h2>${t("ix_h_system")}</h2>
+          <div class="metric"><span>${t("ix_mode")}</span><span class="metric-val">${state.mode||"demo"}</span></div>
           <div class="metric"><span>Exchange</span><span class="metric-val">${state.executor||"blofin_demo"}</span></div>
-          <div class="metric"><span>Coins gevolgd</span><span class="metric-val">${(state.coins||[]).length}</span></div>
+          <div class="metric"><span>${t("ix_coins_followed")}</span><span class="metric-val">${(state.coins||[]).length}</span></div>
           <div class="metric"><span>Kimi scan</span><span class="metric-val">${kimi_ts}</span></div>
           <div class="metric"><span>Agent run</span><span class="metric-val">${agent_ts}</span></div>
-          <div class="metric"><span>Flash crashes (1u)</span><span class="metric-val" style="color:#f0883e">${flashCount}</span></div>
-          ${maxCrash>0 ? `<div class="metric"><span>Max crash score</span><span class="metric-val" style="color:${maxCrash>=60?"#f85149":maxCrash>=40?"#d29922":"#3fb950"}">${maxCrash.toFixed(0)}/100</span></div>` : ""}
+          <div class="metric"><span>${t("ix_flash_crashes")}</span><span class="metric-val" style="color:#f0883e">${flashCount}</span></div>
+          ${maxCrash>0 ? `<div class="metric"><span>${t("ix_max_crash_score")}</span><span class="metric-val" style="color:${maxCrash>=60?"#f85149":maxCrash>=40?"#d29922":"#3fb950"}">${maxCrash.toFixed(0)}/100</span></div>` : ""}
         </div>
         <div class="card">
-          <h2>⚡ Flash Crash Detector</h2>
+          <h2>${t("ix_h_flash")}</h2>
           ${safeRender(() => renderFlash(state.flash_triggers))}
         </div>
         <div class="card" style="grid-column: span 2">
-          <h2>🤖 AI Agent Workflow (Research → Strategy → Risk → Verify)</h2>
+          <h2>${t("ix_h_agent")}</h2>
           ${safeRender(() => renderAgent(state.last_agent))}
         </div>
         <div class="card" style="grid-column: span 2">
-          <h2>📈 Signaal Performance — Wat hadden eerdere signalen opgeleverd?</h2>
+          <h2>${t("ix_h_perf")}</h2>
           ${safeRender(() => renderPerformance(perfData))}
         </div>
         <div class="card" style="grid-column: span 2" id="hist-card">
-          <h2>🔬 Historische Backtest — alle coins, alle tijden</h2>
+          <h2>${t("ix_h_hist")}</h2>
           <div id="hist-content">
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
               <select id="hist-dropdown"
                 style="background:#0d1117;border:1px solid #30363d;border-radius:6px;
                        padding:6px 10px;color:#e6edf3;font-size:.82rem;min-width:170px;outline:none"
                 onchange="onDropdownChange(this)">
-                <option value="">── Gevolgde coins ──</option>
+                <option value="">── ${t("ix_hist_followed")} ──</option>
                 <option value="" disabled>── Top coins ──</option>
                 <option value="BTCUSDT">BTC — Bitcoin</option>
                 <option value="ETHUSDT">ETH — Ethereum</option>
@@ -840,25 +838,25 @@ async function renderFromState(state) {
                 <option value="JUPUSDT">JUP — Jupiter</option>
                 <option value="BONKUSDT">BONK</option>
               </select>
-              <span style="color:#8b949e;font-size:.78rem">of</span>
-              <input id="hist-sym-input" type="text" placeholder="Eigen symbool, bijv. APEUSDT"
+              <span style="color:#8b949e;font-size:.78rem" id="ix-or-span"></span>
+              <input id="hist-sym-input" type="text"
                 style="background:#0d1117;border:1px solid #30363d;border-radius:6px;
                        padding:6px 12px;color:#e6edf3;font-size:.82rem;width:160px;outline:none"/>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-              <span style="color:#8b949e;font-size:.78rem;margin-right:4px">Periode:</span>
+              <span id="ix-period-lbl" style="color:#8b949e;font-size:.78rem;margin-right:4px"></span>
               <div style="display:flex;gap:4px" id="hist-periods">
                 <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,3)">3m</button>
                 <button class="hist-btn" style="background:#1f4068;border-color:#58a6ff" onclick="setPeriod(this,6)">6m</button>
-                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,12)">1j</button>
-                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,24)">2j</button>
+                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,12)">1y</button>
+                <button class="hist-btn" style="background:#0d1117" onclick="setPeriod(this,24)">2y</button>
                 <button class="hist-btn" style="background:#2d1f63;border-color:#7c3aed;color:#a78bfa" onclick="setPeriod(this,0)">MAX ⭐</button>
               </div>
-              <button class="hist-btn" onclick="runHistBacktestInput()" style="margin-left:8px;background:#238636">▶ Start Backtest</button>
+              <button id="ix-start-btn" class="hist-btn" onclick="runHistBacktestInput()" style="margin-left:8px;background:#238636"></button>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
-              <span style="color:#8b949e;font-size:.78rem;margin-right:4px">Signaal filter:</span>
-              <button class="sig-filter-btn active" onclick="setSigFilter(this,'')" data-filter="">Alle</button>
+              <span id="ix-sig-filter-lbl" style="color:#8b949e;font-size:.78rem;margin-right:4px"></span>
+              <button class="sig-filter-btn active" onclick="setSigFilter(this,'')" data-filter="" id="ix-filter-all-btn"></button>
               <button class="sig-filter-btn" onclick="setSigFilter(this,'PERFECT_DAY')" data-filter="PERFECT_DAY">⭐ Perfect Day</button>
               <button class="sig-filter-btn" onclick="setSigFilter(this,'BREAKOUT_BULL')" data-filter="BREAKOUT_BULL">Breakout</button>
               <button class="sig-filter-btn" onclick="setSigFilter(this,'MOMENTUM')" data-filter="MOMENTUM">Momentum</button>
@@ -876,7 +874,7 @@ async function renderFromState(state) {
   } catch(e) {
     document.getElementById("status-dot").style.background = "#f85149";
     document.getElementById("app").innerHTML =
-      `<div id="error-msg">⚠️ Fout (${e.message}). Herverbinden...</div>`;
+      `<div id="error-msg">${t("ix_error_reconnect").replace("{msg}", e.message)}</div>`;
   }
 }
 
@@ -908,12 +906,33 @@ function connectSSE() {
   console.log("[SSE] Verbonden met", url);
 }
 
-// Translate static header elements
-(function initI18n() {
+function initI18n() {
   document.getElementById("logout-btn").textContent    = t("nav_logout");
   document.getElementById("last-update").textContent   = t("loading_price");
   document.getElementById("status-dot").title          = t("connected");
-})();
+  document.getElementById("ix-nav-live").textContent   = t("nav_live");
+  document.getElementById("ix-nav-live").title         = t("title_live_signals");
+  document.getElementById("ix-nav-setup").textContent  = t("nav_setup");
+  document.getElementById("ix-nav-setup").title        = t("title_setup_intelligence");
+  document.getElementById("ix-nav-bot").textContent    = t("nav_positions");
+  document.getElementById("ix-nav-bot").title          = t("title_bot_positions");
+  document.getElementById("ix-nav-quality").textContent = t("ix_nav_quality");
+  document.getElementById("ix-nav-quality").title      = t("title_sterk_quality");
+  var orSpan = document.getElementById("ix-or-span");
+  if (orSpan) orSpan.textContent = t("ix_or");
+  var periodLbl = document.getElementById("ix-period-lbl");
+  if (periodLbl) periodLbl.textContent = t("ix_period");
+  var startBtn = document.getElementById("ix-start-btn");
+  if (startBtn) startBtn.textContent = t("ix_start_backtest");
+  var sigLbl = document.getElementById("ix-sig-filter-lbl");
+  if (sigLbl) sigLbl.textContent = t("ix_signal_filter");
+  var allBtn = document.getElementById("ix-filter-all-btn");
+  if (allBtn) allBtn.textContent = t("ix_all");
+  var symInput = document.getElementById("hist-sym-input");
+  if (symInput) symInput.placeholder = t("custom_symbol");
+  initLangButtons();
+}
+initI18n();
 
 // Start live ticker meteen
 startLiveTicker();
@@ -928,7 +947,7 @@ startExchangeComparison();
     await renderFromState(state);
   } catch(e) {
     document.getElementById("app").innerHTML =
-      `<div id="error-msg">⚠️ Kan Control API niet bereiken (${e.message}).</div>`;
+      `<div id="error-msg">${t("ix_api_unreachable").replace("{msg}", e.message)}</div>`;
   }
   connectSSE();
 })();

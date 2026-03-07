@@ -120,6 +120,10 @@
   <h1 id="header-title">Chart</h1>
   <a class="nav-back" href="setup_intelligence.html">&#8592; Setup Intel</a>
   <a class="nav-back" href="index.html">Dashboard</a>
+  <div class="lang-toggle">
+    <button class="lang-btn" data-lang="nl" onclick="setLang('nl')">NL</button>
+    <button class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
   <button id="logout-btn" onclick="logout()"></button>
 </header>
 
@@ -761,6 +765,7 @@ function setTf(tf, btn) {
 // ── Start ─────────────────────────────────────────────────────────────────────
 function initI18n() {
   document.getElementById("logout-btn").textContent        = t("nav_logout");
+  initLangButtons();
   document.getElementById("ch-tf-label").textContent       = t("ch_timeframe");
   document.getElementById("ch-verdicts-label").title       = t("show_setup_markers");
   document.getElementById("ch-bot-label").title            = t("show_bot_trades");

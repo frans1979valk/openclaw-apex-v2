@@ -12,7 +12,13 @@
  * Example: t("bot_start") returns "Bot starten" (nl) or "Start bot" (en)
  */
 
-const LANG = "nl"; // Change to "en" for English, "de" for German, etc.
+// Language: saved in localStorage, or auto-detected from browser (default: "nl")
+let LANG = (function() {
+  const saved = localStorage.getItem("oc_lang");
+  if (saved && ["nl","en"].includes(saved)) return saved;
+  const browser = (navigator.language || "").slice(0, 2).toLowerCase();
+  return browser === "en" ? "en" : "nl";
+})();
 
 const TRANSLATIONS = {
 
@@ -261,6 +267,74 @@ const TRANSLATIONS = {
     ch_pnl_after_1h:    "P&L na 1h",
     ch_pnl_after_4h:    "P&L na 4h",
     ch_rsi_at:          "RSI op moment",
+
+    // --- Index dashboard ---
+    ix_no_coins:          "Geen coins geladen...",
+    ix_no_flash:          "Geen flash crashes (1u)",
+    ix_flash_drop:        "daling",
+    ix_flash_price:       "prijs",
+    ix_agent_not_run:     "Nog niet gerund...",
+    ix_decision:          "Beslissing:",
+    ix_confidence:        "% vertrouwen",
+    ix_strategy_lbl:      "Strategie:",
+    ix_risk_lbl:          "Risk:",
+    ix_waiting:           "wachten...",
+    ix_no_perf:           "Nog geen signalen geëvalueerd. Komt vanzelf na 15 minuten...",
+    ix_winrate_1h:        "Win-rate (1u)",
+    ix_avg_pnl_1h:        "Gem. P&L (1u)",
+    ix_evaluated:         "Geëvalueerd",
+    ix_perf_15m:          "15m:",
+    ix_perf_1h:           "1u:",
+    ix_perf_4h:           "4u:",
+    ix_balance_na:        "Balans niet beschikbaar.",
+    ix_current_balance:   "💰 Huidige balans (Demo USDT)",
+    ix_vs:                "t.o.v.",
+    ix_orders:            "Orders",
+    ix_peak_balance:      "Piek balans",
+    ix_avg_pnl_1h_label:  "Gem. P&L na 1u",
+    ix_signals_evaluated: "Signalen geëvalueerd",
+    ix_volume_traded:     "Volume verhandeld",
+    ix_recent_orders:     "Recente orders:",
+    ix_render_error:      "⚠️ Weergavefout:",
+    ix_hist_max:          "MAX (alle beschikbare data)",
+    ix_hist_max_full:     "MAX (volledige geschiedenis)",
+    ix_hist_months:       "{n} maanden",
+    ix_analyzing:         "{sym} analyseren: {period} × 1h candles... even geduld (~15-60s voor MAX).",
+    ix_result_1h:         "Resultaat na 1 uur:",
+    ix_signals:           "Signalen",
+    ix_per_signal_type:   "Per signaaltype:",
+    ix_backtest_disc:     "⚠️ Backtest = historische simulatie. Geen garantie voor toekomstige resultaten.",
+    ix_filtered_on:       "gefilterd op",
+    ix_live_prefix:       "⚡ Live:",
+    ix_iron_law:          "⚠️ IJZEREN WET ACTIEF — Pre-crash score {score}/100. Kooporders geblokkeerd.",
+    ix_h_balance:         "💰 Demo Account — BloFin Paper Trading",
+    ix_h_coins:           "📊 Coin Overzicht",
+    ix_h_exchange:        "🏦 Exchange Vergelijking — Live Prijs per Exchange",
+    ix_h_system:          "⚙️ Systeem",
+    ix_h_flash:           "⚡ Flash Crash Detector",
+    ix_h_agent:           "🤖 AI Agent Workflow (Research → Strategy → Risk → Verify)",
+    ix_h_perf:            "📈 Signaal Performance — Wat hadden eerdere signalen opgeleverd?",
+    ix_h_hist:            "🔬 Historische Backtest — alle coins, alle tijden",
+    ix_mode:              "Mode",
+    ix_coins_followed:    "Coins gevolgd",
+    ix_flash_crashes:     "Flash crashes (1u)",
+    ix_max_crash_score:   "Max crash score",
+    ix_error_reconnect:   "⚠️ Fout ({msg}). Herverbinden...",
+    ix_api_unreachable:   "⚠️ Kan Control API niet bereiken ({msg}).",
+    ix_loading_prices:    "Laden prijzen...",
+    ix_offline:           "— offline —",
+    ix_exch_desc:         "{base}/USDT — gewogen consensus (Coinbase 35% gewicht) — BloFin is jouw handelsplatform",
+    ix_exch_price:        "Prijs",
+    ix_exch_vs_consensus: "vs Consensus",
+    ix_exch_weighted:     "Gewogen consensus:",
+    ix_exch_online:       "{n}/6 online",
+    ix_hist_followed:     "── Gevolgd door Kimi ──",
+    ix_or:                "of",
+    ix_period:            "Periode:",
+    ix_start_backtest:    "▶ Start Backtest",
+    ix_signal_filter:     "Signaal filter:",
+    ix_all:               "Alle",
+    ix_nav_quality:       "📉 Kwaliteit",
   },
 
   en: {
@@ -508,6 +582,74 @@ const TRANSLATIONS = {
     ch_pnl_after_1h:    "P&L after 1h",
     ch_pnl_after_4h:    "P&L after 4h",
     ch_rsi_at:          "RSI at moment",
+
+    // --- Index dashboard ---
+    ix_no_coins:          "No coins loaded...",
+    ix_no_flash:          "No flash crashes (1h)",
+    ix_flash_drop:        "drop",
+    ix_flash_price:       "price",
+    ix_agent_not_run:     "Not run yet...",
+    ix_decision:          "Decision:",
+    ix_confidence:        "% confidence",
+    ix_strategy_lbl:      "Strategy:",
+    ix_risk_lbl:          "Risk:",
+    ix_waiting:           "waiting...",
+    ix_no_perf:           "No signals evaluated yet. Will appear automatically after 15 minutes...",
+    ix_winrate_1h:        "Win rate (1h)",
+    ix_avg_pnl_1h:        "Avg P&L (1h)",
+    ix_evaluated:         "Evaluated",
+    ix_perf_15m:          "15m:",
+    ix_perf_1h:           "1h:",
+    ix_perf_4h:           "4h:",
+    ix_balance_na:        "Balance not available.",
+    ix_current_balance:   "💰 Current balance (Demo USDT)",
+    ix_vs:                "vs",
+    ix_orders:            "Orders",
+    ix_peak_balance:      "Peak balance",
+    ix_avg_pnl_1h_label:  "Avg P&L after 1h",
+    ix_signals_evaluated: "Signals evaluated",
+    ix_volume_traded:     "Volume traded",
+    ix_recent_orders:     "Recent orders:",
+    ix_render_error:      "⚠️ Render error:",
+    ix_hist_max:          "MAX (all available data)",
+    ix_hist_max_full:     "MAX (full history)",
+    ix_hist_months:       "{n} months",
+    ix_analyzing:         "Analyzing {sym}: {period} × 1h candles... please wait (~15-60s for MAX).",
+    ix_result_1h:         "Result after 1 hour:",
+    ix_signals:           "Signals",
+    ix_per_signal_type:   "Per signal type:",
+    ix_backtest_disc:     "⚠️ Backtest = historical simulation. No guarantee for future results.",
+    ix_filtered_on:       "filtered on",
+    ix_live_prefix:       "⚡ Live:",
+    ix_iron_law:          "⚠️ IRON LAW ACTIVE — Pre-crash score {score}/100. Buy orders blocked.",
+    ix_h_balance:         "💰 Demo Account — BloFin Paper Trading",
+    ix_h_coins:           "📊 Coin Overview",
+    ix_h_exchange:        "🏦 Exchange Comparison — Live Price per Exchange",
+    ix_h_system:          "⚙️ System",
+    ix_h_flash:           "⚡ Flash Crash Detector",
+    ix_h_agent:           "🤖 AI Agent Workflow (Research → Strategy → Risk → Verify)",
+    ix_h_perf:            "📈 Signal Performance — What would earlier signals have returned?",
+    ix_h_hist:            "🔬 Historical Backtest — all coins, all time",
+    ix_mode:              "Mode",
+    ix_coins_followed:    "Coins tracked",
+    ix_flash_crashes:     "Flash crashes (1h)",
+    ix_max_crash_score:   "Max crash score",
+    ix_error_reconnect:   "⚠️ Error ({msg}). Reconnecting...",
+    ix_api_unreachable:   "⚠️ Cannot reach Control API ({msg}).",
+    ix_loading_prices:    "Loading prices...",
+    ix_offline:           "— offline —",
+    ix_exch_desc:         "{base}/USDT — weighted consensus (Coinbase 35% weight) — BloFin is your exchange",
+    ix_exch_price:        "Price",
+    ix_exch_vs_consensus: "vs Consensus",
+    ix_exch_weighted:     "Weighted consensus:",
+    ix_exch_online:       "{n}/6 online",
+    ix_hist_followed:     "── Tracked by Kimi ──",
+    ix_or:                "or",
+    ix_period:            "Period:",
+    ix_start_backtest:    "▶ Start Backtest",
+    ix_signal_filter:     "Signal filter:",
+    ix_all:               "All",
+    ix_nav_quality:       "📉 STERK",
   }
 
 };
@@ -519,3 +661,31 @@ const TRANSLATIONS = {
 function t(key) {
   return (TRANSLATIONS[LANG] || TRANSLATIONS["nl"])[key] || TRANSLATIONS["nl"][key] || key;
 }
+
+/**
+ * Switch language and reload the page (all content re-renders on load).
+ */
+function setLang(lang) {
+  localStorage.setItem("oc_lang", lang);
+  location.reload();
+}
+
+/**
+ * Highlight the active language button. Call this from each page's initI18n().
+ */
+function initLangButtons() {
+  document.querySelectorAll(".lang-btn[data-lang]").forEach(function(b) {
+    b.classList.toggle("lang-active", b.dataset.lang === LANG);
+  });
+}
+
+// Auto-inject CSS for the NL/EN toggle so each page doesn't need to copy it
+(function() {
+  var s = document.createElement("style");
+  s.textContent = ".lang-toggle{display:inline-flex;gap:2px;margin-left:6px}" +
+    ".lang-btn{font-size:.7rem;padding:3px 7px;border-radius:4px;border:1px solid #30363d;" +
+    "background:#21262d;color:#8b949e;cursor:pointer}" +
+    ".lang-btn:hover{background:#2d333b;color:#c9d1d9}" +
+    ".lang-btn.lang-active{background:#1f4068;color:#58a6ff;border-color:#1158a7;font-weight:700}";
+  document.head.appendChild(s);
+})();
