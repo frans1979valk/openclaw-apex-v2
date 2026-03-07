@@ -407,8 +407,17 @@ def startup():
                       minutes=UPDATE_INTERVAL_MINUTES,
                       id="incremental_update",
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60))
+    # Coin auto-discovery: elke 30 minuten
+    scheduler.add_job(_check_new_coins, "interval",
+                      minutes=30,
+                      id="coin_watcher",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5))
+    # Historical enrichment: eenmalig 2 minuten na start
+    scheduler.add_job(_run_historical_enrich, "date",
+                      run_date=datetime.now(timezone.utc) + timedelta(minutes=2),
+                      id="initial_enrich")
     scheduler.start()
-    log.info(f"Scheduler gestart: update elke {UPDATE_INTERVAL_MINUTES} min")
+    log.info(f"Scheduler gestart: update elke {UPDATE_INTERVAL_MINUTES} min, coin-watcher elke 30 min")
 
 
 @app.on_event("shutdown")
@@ -1404,3 +1413,184 @@ def reverse_backtest(req_body: ReverseBacktestRequest):
             "crash_probability_if_3plus": "gebruik als vroeg-waarschuwing bij 3+ actieve signalen",
         }
     }
+
+
+# ── Historical Context Enrichment ─────────────────────────────────────────────
+
+HISTORICAL_CONTEXT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS historical_context (
+    id          BIGSERIAL PRIMARY KEY,
+    backtest_id INTEGER NOT NULL UNIQUE,
+    symbol      TEXT NOT NULL,
+    candle_ts   TIMESTAMPTZ NOT NULL,
+    signal      TEXT NOT NULL,
+    pnl_1h_pct  REAL,
+    pnl_4h_pct  REAL,
+    pnl_24h_pct REAL,
+    rsi         REAL,
+    rsi_zone    TEXT,
+    macd_hist   REAL,
+    bb_width    REAL,
+    bb_position TEXT,
+    ema21       REAL,
+    ema55       REAL,
+    ema200      REAL,
+    ema_bull    INTEGER,
+    adx         REAL,
+    stoch_rsi_k REAL,
+    stoch_rsi_d REAL,
+    volume_ratio REAL,
+    atr         REAL,
+    enriched_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_hctx_symbol  ON historical_context(symbol);
+CREATE INDEX IF NOT EXISTS idx_hctx_signal  ON historical_context(signal);
+CREATE INDEX IF NOT EXISTS idx_hctx_rsi     ON historical_context(rsi);
+"""
+
+_enrich_running = False
+
+def _run_historical_enrich():
+    global _enrich_running
+    if _enrich_running:
+        log.info("[historical-enrich] Al bezig, sla over.")
+        return
+    _enrich_running = True
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Maak tabel aan
+        for stmt in HISTORICAL_CONTEXT_SCHEMA.strip().split(";"):
+            s = stmt.strip()
+            if s:
+                cur.execute(s)
+        conn.commit()
+
+        # Vul via JOIN historical_backtest × indicators_data
+        cur.execute("""
+            INSERT INTO historical_context
+                (backtest_id, symbol, candle_ts, signal,
+                 pnl_1h_pct, pnl_4h_pct, pnl_24h_pct,
+                 rsi, rsi_zone, macd_hist, bb_width, bb_position,
+                 ema21, ema55, ema200, ema_bull,
+                 adx, stoch_rsi_k, stoch_rsi_d, volume_ratio, atr)
+            SELECT hb.id, hb.symbol, hb.candle_ts, hb.signal,
+                   hb.pnl_1h_pct, hb.pnl_4h_pct, hb.pnl_24h_pct,
+                   i.rsi, i.rsi_zone, i.macd_hist, i.bb_width, i.bb_position,
+                   i.ema21, i.ema55, i.ema200, i.ema_bull::integer,
+                   i.adx, i.stoch_rsi_k, i.stoch_rsi_d, i.volume_ratio, i.atr
+            FROM historical_backtest hb
+            JOIN indicators_data i
+                ON i.symbol   = hb.symbol
+               AND i.ts::timestamptz = hb.candle_ts::timestamptz
+               AND i.interval = '1h'
+            WHERE hb.pnl_1h_pct IS NOT NULL
+            ON CONFLICT (backtest_id) DO NOTHING
+        """)
+        inserted = cur.rowcount
+        conn.commit()
+
+        cur.execute("SELECT COUNT(*) FROM historical_context")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM historical_backtest")
+        backtest_total = cur.fetchone()[0]
+        conn.close()
+        log.info(f"[historical-enrich] Klaar: {inserted} nieuw, {total}/{backtest_total} totaal verrijkt")
+    except Exception as e:
+        log.error(f"[historical-enrich] Fout: {e}")
+    finally:
+        _enrich_running = False
+
+
+@app.post("/historical-enrich")
+def historical_enrich(background_tasks: BackgroundTasks):
+    """Verrijkt historical_backtest met indicator-context via JOIN met indicators_data."""
+    background_tasks.add_task(_run_historical_enrich)
+    return {"status": "started", "message": "Historical enrichment gestart in achtergrond — check /historical-enrich/status"}
+
+
+@app.get("/historical-enrich/status")
+def historical_enrich_status():
+    """Geeft de huidige stand van historical_context terug."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM historical_context")
+        enriched = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM historical_backtest")
+        total_bt = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT symbol) FROM historical_context")
+        coins = cur.fetchone()[0]
+        cur.execute("SELECT MIN(candle_ts), MAX(candle_ts) FROM historical_context")
+        mn, mx = cur.fetchone()
+        conn.close()
+        return {
+            "enriched": enriched,
+            "total_backtest": total_bt,
+            "coverage_pct": round(enriched / total_bt * 100, 1) if total_bt else 0,
+            "coins": coins,
+            "date_range": {"from": str(mn), "to": str(mx)},
+            "running": _enrich_running,
+        }
+    except Exception as e:
+        return {"enriched": 0, "error": str(e)}
+
+
+# ── Coin Auto-Discovery ────────────────────────────────────────────────────────
+
+_known_coins: set = set()
+
+def _check_new_coins():
+    """Achtergrond job: detecteert nieuwe coins in signal_performance en importeert ze."""
+    global _known_coins
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Coins die recent actief zijn in de trading engine
+        cur.execute("""
+            SELECT DISTINCT symbol FROM signal_performance
+            WHERE ts > NOW() - INTERVAL '48 hours'
+        """)
+        active_coins = {r[0] for r in cur.fetchall()}
+
+        # Coins die al data hebben in indicators_data
+        cur.execute("SELECT DISTINCT symbol FROM indicators_data")
+        covered_coins = {r[0] for r in cur.fetchall()}
+        conn.close()
+
+        new_coins = active_coins - covered_coins - _known_coins
+        if new_coins:
+            log.info(f"[coin-watcher] Nieuwe coins gedetecteerd: {new_coins}")
+            for coin in new_coins:
+                log.info(f"[coin-watcher] Import starten voor {coin}...")
+                _import_symbol(coin, "1h", months=48)
+                _known_coins.add(coin)
+            # Na import: historical_context bijwerken
+            _run_historical_enrich()
+        else:
+            # Update known set
+            _known_coins = covered_coins
+    except Exception as e:
+        log.error(f"[coin-watcher] Fout: {e}")
+
+
+@app.get("/coin-watcher/status")
+def coin_watcher_status():
+    """Geeft overzicht van gedekte en ontbrekende coins."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT symbol FROM signal_performance WHERE ts > NOW() - INTERVAL '48 hours'")
+        active = sorted(r[0] for r in cur.fetchall())
+        cur.execute("SELECT DISTINCT symbol FROM indicators_data")
+        covered = sorted(r[0] for r in cur.fetchall())
+        conn.close()
+        missing = sorted(set(active) - set(covered))
+        return {
+            "active_coins": active,
+            "covered_coins": covered,
+            "missing_coverage": missing,
+            "missing_count": len(missing),
+        }
+    except Exception as e:
+        return {"error": str(e)}
