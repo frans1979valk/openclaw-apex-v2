@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Chart — OpenClaw Apex</title>
+<script src="i18n.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -119,7 +120,7 @@
   <h1 id="header-title">Chart</h1>
   <a class="nav-back" href="setup_intelligence.html">&#8592; Setup Intel</a>
   <a class="nav-back" href="index.html">Dashboard</a>
-  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+  <button id="logout-btn" onclick="logout()"></button>
 </header>
 
 <div id="controls">
@@ -147,7 +148,7 @@
   </select>
 
   <div class="tf-group">
-    <span style="font-size:.72rem;color:#8b949e">Tijdframe:</span>
+    <span id="ch-tf-label" style="font-size:.72rem;color:#8b949e"></span>
     <button class="tf-btn" onclick="setTf('5m',this)">5m</button>
     <button class="tf-btn" onclick="setTf('15m',this)">15m</button>
     <button class="tf-btn active" onclick="setTf('1h',this)">1h</button>
@@ -168,17 +169,17 @@
       <input type="checkbox" id="ema200-chk" checked onchange="toggleEma(200)"/>
       <span class="ema-dot" style="background:#58a6ff"></span> 200
     </label>
-    <label class="ema-toggle" title="Setup Intel STERK/TOESTAAN momenten tonen">
+    <label id="ch-verdicts-label" class="ema-toggle">
       <input type="checkbox" id="verdicts-chk" checked onchange="rebuildMarkers()"/>
       <span style="color:#8b949e">Setup Intel</span>
     </label>
-    <label class="ema-toggle" title="Testbot trades tonen">
+    <label id="ch-bot-label" class="ema-toggle">
       <input type="checkbox" id="bot-chk" checked onchange="rebuildMarkers()"/>
       <span style="color:#3fb950">Bot trades</span>
     </label>
   </div>
 
-  <div id="legend">Hover over grafiek...</div>
+  <div id="legend"></div>
 </div>
 
 <div id="charts-wrap">
@@ -193,7 +194,7 @@
 </div>
 
 <div id="status-bar">
-  <span><span class="status-dot" id="status-dot"></span> <span id="status-txt">Laden...</span></span>
+  <span><span class="status-dot" id="status-dot"></span> <span id="status-txt"></span></span>
   <span id="status-candles"></span>
   <span id="status-verdicts"></span>
   <span id="status-ts"></span>
@@ -456,12 +457,12 @@ function buildMarkers(verdicts) { return buildAllMarkers(); }
 function updateLegend(param) {
   const el = document.getElementById("legend");
   if (!param || !param.time || !param.seriesData || !_candleSeries) {
-    el.innerHTML = "Hover over grafiek voor OHLCV waarden...";
+    el.innerHTML = t("chart_hover");
     return;
   }
   const c = param.seriesData.get(_candleSeries);
   if (!c) return;
-  const d = new Date(param.time * 1000).toLocaleString("nl-NL", {timeZone: "UTC"});
+  const d = new Date(param.time * 1000).toLocaleString(undefined, {timeZone: "UTC"});
   const chg = c.open > 0 ? ((c.close - c.open) / c.open * 100).toFixed(2) : "0";
   const chgColor = parseFloat(chg) >= 0 ? "#3fb950" : "#f85149";
   let html = `<span style="color:#8b949e">${d}</span>&nbsp; `;
@@ -497,18 +498,18 @@ function showVerdictPanel(v) {
   const color = VERDICT_COLORS[v.verdict] || "#8b949e";
   document.getElementById("vp-title").innerHTML =
     `<span style="color:${color}">${v.verdict}</span> — ${(v.signal||"?")} &nbsp;
-     <span style="color:#8b949e;font-weight:400;font-size:.72rem">${new Date(v.time*1000).toLocaleString("nl-NL",{timeZone:"UTC"})}</span>`;
+     <span style="color:#8b949e;font-weight:400;font-size:.72rem">${new Date(v.time*1000).toLocaleString(undefined,{timeZone:"UTC"})}</span>`;
 
   const dec = getPriceDecimals(v.entry_price);
   const pnlColor = v.pnl_1h != null ? (v.pnl_1h >= 0 ? "#3fb950" : "#f85149") : "#8b949e";
   const rows = [
-    ["Entry prijs",   v.entry_price != null ? `$${v.entry_price.toFixed(dec)}` : "—"],
-    ["P&L na 1h",     v.pnl_1h != null ? `<span style="color:${pnlColor}">${v.pnl_1h>=0?"+":""}${v.pnl_1h.toFixed(3)}%</span>` : "—"],
-    ["P&L na 4h",     v.pnl_4h != null ? `<span style="color:${v.pnl_4h>=0?"#3fb950":"#f85149"}">${v.pnl_4h>=0?"+":""}${v.pnl_4h.toFixed(3)}%</span>` : "—"],
-    ["RSI op moment", v.rsi != null ? v.rsi.toFixed(1) : "—"],
-    ["Win% historisch", v.win_pct != null ? `${v.win_pct.toFixed(1)}%` : "—"],
-    ["Gem. P&L hist.", v.avg_1h_hist != null ? `${v.avg_1h_hist>=0?"+":""}${v.avg_1h_hist.toFixed(3)}%` : "—"],
-    ["Historisch (n)", v.n ?? "—"],
+    [t("col_entry"),       v.entry_price != null ? `$${v.entry_price.toFixed(dec)}` : "—"],
+    [t("ch_pnl_after_1h"), v.pnl_1h != null ? `<span style="color:${pnlColor}">${v.pnl_1h>=0?"+":""}${v.pnl_1h.toFixed(3)}%</span>` : "—"],
+    [t("ch_pnl_after_4h"), v.pnl_4h != null ? `<span style="color:${v.pnl_4h>=0?"#3fb950":"#f85149"}">${v.pnl_4h>=0?"+":""}${v.pnl_4h.toFixed(3)}%</span>` : "—"],
+    [t("ch_rsi_at"),       v.rsi != null ? v.rsi.toFixed(1) : "—"],
+    [t("col_win_hist"),    v.win_pct != null ? `${v.win_pct.toFixed(1)}%` : "—"],
+    [t("col_avg_hist"),    v.avg_1h_hist != null ? `${v.avg_1h_hist>=0?"+":""}${v.avg_1h_hist.toFixed(3)}%` : "—"],
+    [t("col_n_hist"),      v.n ?? "—"],
   ];
   document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
     `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`
@@ -519,17 +520,17 @@ function showVerdictPanel(v) {
 function showBotEntryPanel(e) {
   const panel = document.getElementById("verdict-panel");
   const dec   = getPriceDecimals(e.entry_price);
-  const ts    = new Date(e.time * 1000).toLocaleString("nl-NL", {timeZone:"UTC"});
+  const ts    = new Date(e.time * 1000).toLocaleString(undefined, {timeZone:"UTC"});
   document.getElementById("vp-title").innerHTML =
     `<span style="color:#3fb950">&#11014; BOT BUY</span> — Trade #${e.trade_id} &nbsp;
      <span style="color:#8b949e;font-weight:400;font-size:.72rem">${ts}</span>`;
   const rows = [
-    ["Entry prijs",  `$${e.entry_price.toFixed(dec)}`],
-    ["Signaal",      e.signal || "—"],
-    ["Setup score",  e.setup_score != null ? Math.round(e.setup_score) : "—"],
-    ["Inzet",        `$${e.stake_usd}`],
-    ["TP / SL",      `+${e.tp_pct}% / -${e.sl_pct}%`],
-    ["Status",       `<span style="color:${e.status==="open"?"#3fb950":"#8b949e"}">${e.status}</span>`],
+    [t("col_entry"),       `$${e.entry_price.toFixed(dec)}`],
+    [t("si_th_signal"),    e.signal || "—"],
+    [t("col_setup_score"), e.setup_score != null ? Math.round(e.setup_score) : "—"],
+    [t("col_stake"),       `$${e.stake_usd}`],
+    ["TP / SL",            `+${e.tp_pct}% / -${e.sl_pct}%`],
+    [t("col_status"),      `<span style="color:${e.status==="open"?"#3fb950":"#8b949e"}">${e.status}</span>`],
   ];
   document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
     `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`).join("");
@@ -542,19 +543,19 @@ function showBotExitPanel(x) {
   const color  = reason === "TP" ? "#58a6ff" : reason === "SL" ? "#f85149" : "#d29922";
   const icon   = reason === "TP" ? "&#9679;" : reason === "SL" ? "&#9632;" : "&#9632;";
   const dec    = getPriceDecimals(x.close_price || x.entry_price);
-  const ts     = new Date(x.time * 1000).toLocaleString("nl-NL", {timeZone:"UTC"});
+  const ts     = new Date(x.time * 1000).toLocaleString(undefined, {timeZone:"UTC"});
   const netColor = (x.net_pnl_usd || 0) >= 0 ? "#3fb950" : "#f85149";
   document.getElementById("vp-title").innerHTML =
     `<span style="color:${color}">${icon} ${reason}</span> — Trade #${x.trade_id} &nbsp;
      <span style="color:#8b949e;font-weight:400;font-size:.72rem">${ts}</span>`;
   const rows = [
-    ["Exit prijs",  x.close_price != null ? `$${x.close_price.toFixed(dec)}` : "—"],
-    ["Entry prijs", x.entry_price != null ? `$${x.entry_price.toFixed(dec)}` : "—"],
-    ["Bruto P&L",   x.pnl_pct != null ? `${x.pnl_pct>=0?"+":""}${x.pnl_pct.toFixed(3)}%` : "—"],
-    ["Kosten",      x.fee_usd != null ? `-$${x.fee_usd.toFixed(3)}` : "—"],
-    ["Netto P&L",   x.net_pnl_usd != null
+    [t("col_exit"),     x.close_price != null ? `$${x.close_price.toFixed(dec)}` : "—"],
+    [t("col_entry"),    x.entry_price != null ? `$${x.entry_price.toFixed(dec)}` : "—"],
+    [t("col_gross_pnl"),x.pnl_pct != null ? `${x.pnl_pct>=0?"+":""}${x.pnl_pct.toFixed(3)}%` : "—"],
+    [t("col_fee"),      x.fee_usd != null ? `-$${x.fee_usd.toFixed(3)}` : "—"],
+    [t("col_net_pnl"),  x.net_pnl_usd != null
       ? `<span style="color:${netColor}">${x.net_pnl_usd>=0?"+":""}$${x.net_pnl_usd.toFixed(3)}</span>` : "—"],
-    ["Duur",        x.duration_min != null ? `${x.duration_min} min` : "—"],
+    [t("col_duration"), x.duration_min != null ? `${x.duration_min} min` : "—"],
   ];
   document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
     `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`).join("");
@@ -575,7 +576,7 @@ async function loadData() {
   clearLiveUpdates();
   document.getElementById("spinner-main").style.display = "block";
   document.getElementById("status-dot").style.background = "#d29922";
-  document.getElementById("status-txt").textContent = "Laden...";
+  document.getElementById("status-txt").textContent = t("loading");
   document.getElementById("verdict-panel").classList.remove("show");
 
   createCharts();
@@ -694,7 +695,7 @@ async function loadData() {
 
     // Status
     document.getElementById("status-candles").textContent = `Candles: ${candles.length}`;
-    document.getElementById("status-ts").textContent = new Date().toLocaleTimeString("nl-NL");
+    document.getElementById("status-ts").textContent = new Date().toLocaleTimeString();
     document.getElementById("status-dot").style.background = "#3fb950";
     document.getElementById("status-txt").textContent = `${_sym.replace("USDT","")} — ${_tf}`;
     document.getElementById("spinner-main").style.display = "none";
@@ -704,7 +705,7 @@ async function loadData() {
 
   } catch(e) {
     document.getElementById("status-dot").style.background = "#f85149";
-    document.getElementById("status-txt").textContent = `Fout: ${e.message}`;
+    document.getElementById("status-txt").textContent = `${t("error")}: ${e.message}`;
     document.getElementById("spinner-main").style.display = "none";
     console.error("Chart fout:", e);
   }
@@ -732,7 +733,7 @@ function startLiveUpdates() {
       const fresh = await fetchBinanceCandles(_sym, _tf, 5);
       if (!fresh.length || !_candleSeries) return;
       for (const c of fresh) _candleSeries.update(c);
-      document.getElementById("status-ts").textContent = new Date().toLocaleTimeString("nl-NL");
+      document.getElementById("status-ts").textContent = new Date().toLocaleTimeString();
     } catch(e) {}
   }, interval_ms);
 }
@@ -758,6 +759,16 @@ function setTf(tf, btn) {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+function initI18n() {
+  document.getElementById("logout-btn").textContent        = t("nav_logout");
+  document.getElementById("ch-tf-label").textContent       = t("ch_timeframe");
+  document.getElementById("ch-verdicts-label").title       = t("show_setup_markers");
+  document.getElementById("ch-bot-label").title            = t("show_bot_trades");
+  document.getElementById("legend").textContent            = t("chart_hover");
+  document.getElementById("status-txt").textContent        = t("loading");
+}
+
+initI18n();
 loadData();
 </script>
 </body>

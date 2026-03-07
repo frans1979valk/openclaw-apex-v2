@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Apex + OpenClaw Dashboard</title>
+<script src="i18n.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
@@ -109,13 +110,13 @@
 <header>
   <span>🤖</span>
   <h1>OpenClaw Apex — Live Dashboard</h1>
-  <span id="status-dot" title="Verbonden"></span>
-  <span id="last-update">laden...</span>
+  <span id="status-dot"></span>
+  <span id="last-update"></span>
   <a href="live_signals.html" style="font-size:.78rem;color:#9ecca4;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:8px;white-space:nowrap" title="Live Signalen">&#9889; Live</a>
   <a href="setup_intelligence.html" style="font-size:.78rem;color:#58a6ff;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="Setup Intelligence">&#128202; Setup Intel</a>
   <a href="bot_positions.html" style="font-size:.78rem;color:#3fb950;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="Bot Posities">&#129302; Bot</a>
   <a href="sterk_quality.html" style="font-size:.78rem;color:#d29922;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px;margin-left:4px;white-space:nowrap" title="STERK Kwaliteit">&#128200; Kwaliteit</a>
-  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+  <button id="logout-btn" onclick="logout()"></button>
 </header>
 
 <div id="live-ticker">
@@ -432,7 +433,7 @@ function runHistBacktestInput() {
   const inputVal = document.getElementById("hist-sym-input").value.trim().toUpperCase();
   const ddVal    = document.getElementById("hist-dropdown").value.toUpperCase();
   const sym = inputVal || ddVal;
-  if (!sym) { alert("Selecteer een coin uit de dropdown of voer een symbool in."); return; }
+  if (!sym) { alert(t("coin_hint")); return; }
   runHistBacktest(sym);
 }
 
@@ -555,7 +556,7 @@ async function updateLiveTicker() {
     );
     if (!r.ok) return;
     const data = await r.json();
-    const now = new Date().toLocaleTimeString("nl-NL");
+    const now = new Date().toLocaleTimeString();
     document.getElementById("ticker-ts").textContent = `Binance · ${now}`;
 
     for (const t of data) {
@@ -686,7 +687,7 @@ function renderExchangeCard() {
       </span>
       <span style="color:#8b949e;font-size:.72rem">${onlineCount}/6 online</span>
       <span style="color:#8b949e;font-size:.68rem;margin-left:auto">
-        ${new Date().toLocaleTimeString("nl-NL")}
+        ${new Date().toLocaleTimeString()}
       </span>
     </div>` : ""}`;
 }
@@ -726,7 +727,7 @@ async function renderFromState(state) {
       fetchJSON(`${API}/signal-performance?limit=50`).catch(() => []),
       fetchJSON(`${API}/balance`).catch(() => null),
     ]);
-    const now        = new Date().toLocaleTimeString("nl-NL");
+    const now        = new Date().toLocaleTimeString();
     const kimi_ts    = state.kimi_last_scan ? state.kimi_last_scan.slice(0,19).replace("T"," ") : "—";
     const agent_ts   = state.agent_last_run  ? state.agent_last_run.slice(0,19).replace("T"," ")  : "—";
     const ts         = state.ts ? state.ts.slice(0,19).replace("T"," ") : "—";
@@ -906,6 +907,13 @@ function connectSSE() {
   _sseSource = src;
   console.log("[SSE] Verbonden met", url);
 }
+
+// Translate static header elements
+(function initI18n() {
+  document.getElementById("logout-btn").textContent    = t("nav_logout");
+  document.getElementById("last-update").textContent   = t("loading_price");
+  document.getElementById("status-dot").title          = t("connected");
+})();
 
 // Start live ticker meteen
 startLiveTicker();

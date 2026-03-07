@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Bot Posities — OpenClaw Apex</title>
+<script src="i18n.js"></script>
+<title id="page-title">Bot Posities — OpenClaw Apex</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
@@ -180,81 +181,78 @@
 
 <header>
   <span>&#129302;</span>
-  <h1>Bot Posities</h1>
+  <h1 id="h-title"></h1>
   <div class="nav-links">
-    <a class="nav-link" href="sterk_quality.html">&#128202; STERK Kwaliteit</a>
-    <a class="nav-link" href="setup_intelligence.html">&#128200; Setup Intel</a>
-    <a class="nav-link" href="index.html">&#8592; Dashboard</a>
+    <a class="nav-link" href="sterk_quality.html" id="nav-quality"></a>
+    <a class="nav-link" href="setup_intelligence.html" id="nav-setup"></a>
+    <a class="nav-link" href="index.html" id="nav-dash"></a>
   </div>
-  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+  <button id="logout-btn" onclick="logout()"></button>
 </header>
 
 <div id="status-bar">
   <div class="sbar-item">
     <div class="sbar-val" id="sb-status">---</div>
-    <div class="sbar-lbl">Bot Status</div>
+    <div class="sbar-lbl" id="lbl-bot-status"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-open">-</div>
-    <div class="sbar-lbl">Open trades</div>
+    <div class="sbar-lbl" id="lbl-open-trades"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-slots">-</div>
-    <div class="sbar-lbl">Vrije slots</div>
+    <div class="sbar-lbl" id="lbl-free-slots"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-total">-</div>
-    <div class="sbar-lbl">Totaal trades</div>
+    <div class="sbar-lbl" id="lbl-total-trades"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-winrate">-</div>
-    <div class="sbar-lbl">Winrate</div>
+    <div class="sbar-lbl" id="lbl-winrate"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-net">-</div>
-    <div class="sbar-lbl">Netto P&L</div>
+    <div class="sbar-lbl" id="lbl-net-pnl"></div>
   </div>
   <div style="display:flex;gap:8px;margin-left:auto">
-    <button id="test-btn" onclick="openTestModal()">+ Test trade</button>
-    <button id="bot-toggle" class="start" onclick="toggleBot()">Bot starten</button>
+    <button id="test-btn" onclick="openTestModal()">+ <span id="lbl-test-trade"></span></button>
+    <button id="bot-toggle" class="start" onclick="toggleBot()"></button>
   </div>
-  <div id="ts-label">laden...</div>
+  <div id="ts-label"></div>
 </div>
 
 <div id="main">
   <div class="refresh-bar">
     <div class="refresh-dot"></div>
-    <span class="refresh-txt">Live — vernieuwt elke 15 seconden</span>
+    <span class="refresh-txt" id="lbl-live-refresh"></span>
   </div>
 
-  <div class="section-title">Open posities</div>
-  <div id="positions-wrap">
-    <div class="no-trades">Geen open posities. Bot moet draaien en een STERK signaal detecteren.</div>
-  </div>
+  <div class="section-title" id="lbl-open-positions"></div>
+  <div id="positions-wrap"></div>
 
   <div class="section-title" style="margin-top:24px">
-    Slot status
+    <span id="lbl-slot-status"></span>
     <div class="slots-wrap" style="display:inline-flex;margin-left:12px" id="slots-visual"></div>
   </div>
 
   <div class="section-title" style="margin-top:24px">
-    Laatste 5 gesloten trades
-    <a href="sterk_quality.html" style="font-size:.7rem;color:#58a6ff;text-decoration:none;margin-left:8px">Alle trades &rarr;</a>
+    <span id="lbl-recent-trades"></span>
+    <a href="sterk_quality.html" id="lbl-all-trades" style="font-size:.7rem;color:#58a6ff;text-decoration:none;margin-left:8px"></a>
   </div>
   <div id="recent-wrap" style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:.78rem">
       <thead>
         <tr style="border-bottom:1px solid #30363d">
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Coin</th>
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Signaal</th>
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Resultaat</th>
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">P&L</th>
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Netto</th>
-          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Duur</th>
+          <th id="th-coin"  style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em"></th>
+          <th id="th-signal" style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em"></th>
+          <th id="th-result" style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em"></th>
+          <th id="th-pnl"   style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">P&L</th>
+          <th id="th-net"   style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em"></th>
+          <th id="th-dur"   style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em"></th>
         </tr>
       </thead>
       <tbody id="recent-tbody">
-        <tr><td colspan="6" style="color:#8b949e;padding:12px 8px;text-align:center">Nog geen gesloten trades</td></tr>
       </tbody>
     </table>
   </div>
@@ -263,19 +261,19 @@
 <!-- Test modal -->
 <div id="test-modal">
   <div class="modal-box">
-    <h3>Handmatig trade openen (test)</h3>
+    <h3 id="modal-title"></h3>
     <div class="modal-field">
-      <label>Symbol (bijv. BTCUSDT)</label>
+      <label id="modal-lbl-symbol"></label>
       <input class="modal-input" id="m-symbol" type="text" placeholder="BTCUSDT" value="BTCUSDT"/>
     </div>
     <div class="modal-field">
-      <label>Signaal (optioneel)</label>
+      <label id="modal-lbl-signal"></label>
       <input class="modal-input" id="m-signal" type="text" placeholder="MOMENTUM"/>
     </div>
     <div class="modal-feedback" id="m-feedback"></div>
     <div class="modal-actions">
-      <button class="btn-cancel" onclick="closeTestModal()">Annuleren</button>
-      <button class="btn-primary" onclick="doTestTrade()">Trade openen</button>
+      <button class="btn-cancel" onclick="closeTestModal()" id="btn-cancel"></button>
+      <button class="btn-primary" onclick="doTestTrade()" id="btn-open-trade"></button>
     </div>
   </div>
 </div>
@@ -350,7 +348,7 @@ async function loadStatus() {
     netEl.className   = `sbar-val ${(s.total_net_usd||0) >= 0 ? "status-on" : "status-off"}`;
 
     const tb = document.getElementById("bot-toggle");
-    tb.textContent = d.running ? "Bot stoppen" : "Bot starten";
+    tb.textContent = d.running ? t("bot_stop") : t("bot_start");
     tb.className   = d.running ? "stop" : "start";
 
     // Slots visual
@@ -376,10 +374,7 @@ async function loadPositions() {
     const wrap = document.getElementById("positions-wrap");
     if (!d.positions || d.positions.length === 0) {
       wrap.innerHTML = `<div class="no-trades">
-        Geen open posities.
-        ${_botRunning
-          ? "Bot draait — wacht op een STERK signaal."
-          : "Start de bot via de knop rechtsboven."}
+        ${_botRunning ? t("bot_running") : t("bot_start_prompt")}
       </div>`;
       return;
     }
@@ -409,14 +404,14 @@ async function loadPositions() {
         </div>
 
         <div>
-          <div class="tc-label">Entry prijs</div>
+          <div class="tc-label">${t("col_entry")}</div>
           <div class="tc-value">${fmtPrice(p.entry_price)}</div>
-          <div class="tc-label" style="margin-top:6px">Live prijs</div>
+          <div class="tc-label" style="margin-top:6px">${t("dp_live_price")}</div>
           <div class="tc-value">${fmtPrice(p.live_price)}</div>
         </div>
 
         <div>
-          <div class="tc-label">Actuele P&L</div>
+          <div class="tc-label">P&L</div>
           <div class="tc-value ${pnlCls}" style="font-size:1.1rem">${fmtPct(pnl, 2)}</div>
           <div class="tc-value" style="font-size:.82rem;color:#8b949e">${fmtUsd(p.pnl_usd)}</div>
         </div>
@@ -438,9 +433,9 @@ async function loadPositions() {
         </div>
 
         <div class="time-wrap">
-          <div class="tc-label">Open sinds</div>
+          <div class="tc-label" id="lbl-open-since"></div>
           <div class="time-val ${timeCls}">${fmtAge(ageSec)}</div>
-          <div class="time-lbl">max 2u</div>
+          <div class="time-lbl">max 2h</div>
         </div>
       </div>`;
     }).join("");
@@ -448,7 +443,7 @@ async function loadPositions() {
   } catch(e) { /* stil falen */ }
 
   document.getElementById("ts-label").textContent =
-    `Update: ${new Date().toLocaleTimeString("nl-NL")}`;
+    `${t("updated")}: ${new Date().toLocaleTimeString("nl-NL")}`;
 }
 
 // ── Bot toggle ────────────────────────────────────────────────────────────────
@@ -459,7 +454,7 @@ async function toggleBot() {
     const d = await r.json();
     await loadStatus();
     await loadPositions();
-  } catch(e) { alert("Fout bij bot toggle: " + e.message); }
+  } catch(e) { alert(t("error_bot_toggle") + e.message); }
 }
 
 // ── Test trade modal ──────────────────────────────────────────────────────────
@@ -473,7 +468,7 @@ async function doTestTrade() {
   const sym = document.getElementById("m-symbol").value.trim().toUpperCase();
   const sig = document.getElementById("m-signal").value.trim();
   const fb  = document.getElementById("m-feedback");
-  if (!sym) { fb.textContent = "Vul een symbol in."; fb.style.color = "#f85149"; return; }
+  if (!sym) { fb.textContent = t("coin_fill"); fb.style.color = "#f85149"; return; }
   try {
     const r = await fetch(`${API}/testbot/open`, {
       method: "POST",
@@ -535,6 +530,45 @@ async function refresh() {
   await Promise.all([loadStatus(), loadPositions(), loadRecent()]);
 }
 
+// ── i18n init ─────────────────────────────────────────────────────────────────
+function initI18n() {
+  document.documentElement.lang = LANG;
+  document.getElementById("page-title").textContent   = t("title_bot_positions") + " — OpenClaw Apex";
+  document.getElementById("h-title").textContent      = t("title_bot_positions");
+  document.getElementById("nav-quality").textContent  = "📉 " + t("title_sterk_quality");
+  document.getElementById("nav-setup").textContent    = "📊 " + t("nav_setup");
+  document.getElementById("nav-dash").textContent     = "← " + t("nav_dashboard");
+  document.getElementById("logout-btn").textContent   = t("nav_logout");
+  document.getElementById("lbl-bot-status").textContent   = t("bot_status");
+  document.getElementById("lbl-open-trades").textContent  = "Open trades";
+  document.getElementById("lbl-free-slots").textContent   = t("open_slots");
+  document.getElementById("lbl-total-trades").textContent = t("col_trades");
+  document.getElementById("lbl-winrate").textContent      = t("col_winrate");
+  document.getElementById("lbl-net-pnl").textContent      = t("col_net_pnl");
+  document.getElementById("lbl-test-trade").textContent   = t("test_trade");
+  document.getElementById("bot-toggle").textContent       = t("bot_start");
+  document.getElementById("ts-label").textContent         = t("loading");
+  document.getElementById("lbl-live-refresh").textContent = "Live — 15s";
+  document.getElementById("lbl-open-positions").textContent = "Open positions";
+  document.getElementById("lbl-slot-status").textContent  = "Slot status";
+  document.getElementById("lbl-recent-trades").textContent = "Last 5 closed trades";
+  document.getElementById("lbl-all-trades").textContent   = "All trades →";
+  document.getElementById("th-coin").textContent    = t("col_coin");
+  document.getElementById("th-signal").textContent  = t("col_signal");
+  document.getElementById("th-result").textContent  = "Result";
+  document.getElementById("th-net").textContent     = t("col_net_pnl");
+  document.getElementById("th-dur").textContent     = t("col_duration");
+  document.getElementById("recent-tbody").innerHTML =
+    `<tr><td colspan="6" style="color:#8b949e;padding:12px 8px;text-align:center">${t("loading")}</td></tr>`;
+  // Modal
+  document.getElementById("modal-title").textContent      = "Manual test trade";
+  document.getElementById("modal-lbl-symbol").textContent = "Symbol (e.g. BTCUSDT)";
+  document.getElementById("modal-lbl-signal").textContent = "Signal (optional)";
+  document.getElementById("btn-cancel").textContent       = t("close");
+  document.getElementById("btn-open-trade").textContent   = "Open trade";
+}
+
+initI18n();
 refresh();
 setInterval(refresh, 15000);
 </script>

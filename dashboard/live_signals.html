@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Live Signalen — OpenClaw Apex</title>
+<script src="i18n.js"></script>
+<title id="page-title">Live Signalen — OpenClaw Apex</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
@@ -186,39 +187,39 @@
 
 <header>
   <span>&#9889;</span>
-  <h1>Live Signalen</h1>
-  <a class="nav-back" href="setup_intelligence.html">&#8592; Setup Intel</a>
-  <a class="nav-back" href="index.html">Dashboard</a>
-  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+  <h1 id="h-title"></h1>
+  <a class="nav-back" href="setup_intelligence.html" id="h-nav-setup"></a>
+  <a class="nav-back" href="index.html" id="h-nav-dash"></a>
+  <button id="logout-btn" onclick="logout()"></button>
 </header>
 
 <div id="status-bar">
   <div class="sbar-item">
     <div class="sbar-val" id="sb-regime">...</div>
-    <div class="sbar-lbl">BTC Regime</div>
+    <div class="sbar-lbl" id="lbl-regime"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-active" style="color:#3fb950">0</div>
-    <div class="sbar-lbl">Actief signaal</div>
+    <div class="sbar-lbl" id="lbl-active"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-sterk" style="color:#3fb950">0</div>
-    <div class="sbar-lbl">STERK actief</div>
+    <div class="sbar-lbl" id="lbl-sterk"></div>
   </div>
   <div class="sbar-item">
     <div class="sbar-val" id="sb-total" style="color:#8b949e">0</div>
-    <div class="sbar-lbl">Coins gemonitord</div>
+    <div class="sbar-lbl" id="lbl-total"></div>
   </div>
   <div style="margin-left:auto;font-size:.72rem;color:#8b949e" id="sb-ts"></div>
 </div>
 
 <div id="filter-bar">
-  <span style="font-size:.75rem;color:#8b949e">Filter:</span>
-  <button class="filter-btn active" onclick="setFilter('')">Alles</button>
-  <button class="filter-btn" onclick="setFilter('active')">Met signaal</button>
-  <button class="filter-btn" onclick="setFilter('sterk')">STERK + TOESTAAN</button>
-  <span id="refresh-info">Auto-refresh over <span id="countdown">60</span>s</span>
-  <button id="refresh-btn" onclick="loadData()">&#8635; Nu vernieuwen</button>
+  <span style="font-size:.75rem;color:#8b949e" id="lbl-filter"></span>
+  <button class="filter-btn active" onclick="setFilter('')" id="btn-all"></button>
+  <button class="filter-btn" onclick="setFilter('active')" id="btn-signal"></button>
+  <button class="filter-btn" onclick="setFilter('sterk')" id="btn-sterk"></button>
+  <span id="refresh-info"><span id="lbl-auto-refresh"></span> <span id="countdown">60</span>s</span>
+  <button id="refresh-btn" onclick="loadData()">&#8635; <span id="lbl-refresh"></span></button>
 </div>
 
 <div id="main-wrap">
@@ -227,18 +228,18 @@
   <table id="signals-table" style="display:none">
     <thead>
       <tr>
-        <th>Coin</th>
-        <th>Live prijs</th>
-        <th>RSI (1h)</th>
-        <th>MACD</th>
-        <th>ADX</th>
-        <th>EMA regime</th>
-        <th>Signaal nu</th>
-        <th>Verdict</th>
-        <th>Score</th>
-        <th>Win%</th>
-        <th>Gem. +1h</th>
-        <th>Data van</th>
+        <th id="th-coin"></th>
+        <th id="th-price"></th>
+        <th id="th-rsi"></th>
+        <th id="th-macd"></th>
+        <th id="th-adx"></th>
+        <th id="th-ema"></th>
+        <th id="th-signal"></th>
+        <th id="th-verdict"></th>
+        <th id="th-score"></th>
+        <th id="th-win"></th>
+        <th id="th-avg"></th>
+        <th id="th-data"></th>
       </tr>
     </thead>
     <tbody id="table-body"></tbody>
@@ -310,7 +311,7 @@ function macdHtml(mh) {
   if (mh == null) return "—";
   if (mh > 5)    return `<span class="macd-bull">&#9650; bullish</span>`;
   if (mh < -5)   return `<span class="macd-bear">&#9660; bearish</span>`;
-  return `<span class="macd-flat">&#9644; neutraal</span>`;
+  return `<span class="macd-flat">&#9644; ${t("macd_neutral")}</span>`;
 }
 
 function adxHtml(adx) {
@@ -366,7 +367,7 @@ function tsHtml(ts_str) {
     const d = new Date(ts_str);
     const now = new Date();
     const diffH = Math.round((now - d) / 3600000);
-    const lbl = diffH < 2 ? "recent" : diffH < 24 ? `${diffH}u oud` : `${Math.round(diffH/24)}d oud`;
+    const lbl = diffH < 2 ? t("time_recent") : diffH < 24 ? `${diffH}${t("time_h_old")}` : `${Math.round(diffH/24)}${t("time_d_old")}`;
     const c = diffH < 6 ? "#3fb950" : diffH < 24 ? "#d29922" : "#8b949e";
     return `<span style="color:${c};font-size:.72rem">${lbl}</span>`;
   } catch { return "—"; }
@@ -412,7 +413,7 @@ function renderTable() {
 
   const tbody = document.getElementById("table-body");
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="12" style="color:#8b949e;text-align:center;padding:30px">Geen signalen gevonden voor dit filter.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="color:#8b949e;text-align:center;padding:30px">${t("no_signals_filter")}</td></tr>`;
     return;
   }
 
@@ -426,7 +427,7 @@ function renderTable() {
         ${s.symbol.replace("USDT","")}
         <a href="chart.html?symbol=${s.symbol}&interval=1h" onclick="event.stopPropagation()" title="Open chart">&#128200;</a>
       </td>
-      <td class="price-cell price-loading" data-sym="${s.symbol}">laden...</td>
+      <td class="price-cell price-loading" data-sym="${s.symbol}">${t("loading_price")}</td>
       <td>${rsiHtml(s.rsi, s.rsi_zone)}</td>
       <td>${macdHtml(s.macd_hist)}</td>
       <td>${adxHtml(s.adx)}</td>
@@ -463,24 +464,24 @@ function showDetail(sym) {
     const pnlKleur  = (s.avg_1h || 0) >= 0.2 ? "#3fb950" : (s.avg_1h || 0) >= 0 ? "#d29922" : "#f85149";
     interp = `
       <div class="dp-interp">
-        <b>Signaal: ${sigLabel}</b><br/>
-        Historisch haalt dit signaal op ${s.symbol.replace("USDT","")}
-        <span style="color:${kansKleur};font-weight:600">${(s.win_pct_1h||0).toFixed(1)}% winkans</span>
-        met gemiddeld <span style="color:${pnlKleur};font-weight:600">${(s.avg_1h||0) >= 0 ? "+" : ""}${(s.avg_1h||0).toFixed(3)}%</span> na 1 uur
-        (gebaseerd op ${s.n || "?"} historische trades).<br/><br/>
-        ${s.verdict === "STERK" ? "<b style='color:#3fb950'>&#10003; Sterke setup</b> — dit is een van de beste setups in het systeem." :
-          s.verdict === "TOESTAAN" ? "<b style='color:#58a6ff'>&#10003; Toegestaan</b> — solide setup, de bot mag hier actie op ondernemen." :
-          s.verdict === "TOESTAAN_ZWAK" ? "<b style='color:#d29922'>&#9888; Zwak</b> — marginale setup, bot handelt hier niet op." :
-          "<b style='color:#f85149'>&#10005; Skip</b> — negatieve verwachting, bot slaat dit over."}
+        <b>${t("interp_signal")} ${sigLabel}</b><br/>
+        ${t("interp_hist_intro")} ${s.symbol.replace("USDT","")}
+        <span style="color:${kansKleur};font-weight:600">${(s.win_pct_1h||0).toFixed(1)}% ${t("interp_win_chance")}</span>
+        ${t("interp_with_avg")} <span style="color:${pnlKleur};font-weight:600">${(s.avg_1h||0) >= 0 ? "+" : ""}${(s.avg_1h||0).toFixed(3)}%</span> ${t("interp_after_1h")}
+        (${t("interp_based_on")} ${s.n || "?"} ${t("interp_hist_trades")}).<br/><br/>
+        ${s.verdict === "STERK" ? `<b style='color:#3fb950'>&#10003; ${t("verdict_sterk")}</b> — ${t("interp_sterk")}` :
+          s.verdict === "TOESTAAN" ? `<b style='color:#58a6ff'>&#10003; ${t("verdict_toestaan")}</b> — ${t("interp_toestaan")}` :
+          s.verdict === "TOESTAAN_ZWAK" ? `<b style='color:#d29922'>&#9888; ZWAK</b> — ${t("interp_zwak")}` :
+          `<b style='color:#f85149'>&#10005; ${t("verdict_skip")}</b> — ${t("interp_skip")}`}
       </div>`;
   } else if (!s.signal) {
-    interp = `<div class="dp-interp" style="color:#8b949e">Geen actief signaal op dit moment.<br/>De bot monitort deze coin maar onderneemt nu geen actie.</div>`;
+    interp = `<div class="dp-interp" style="color:#8b949e">${t("interp_no_signal")}<br/>${t("interp_bot_monitors")}</div>`;
   }
 
   document.getElementById("detail-content").innerHTML = `
     <h2>${s.symbol.replace("USDT","")} <span style="color:#8b949e;font-weight:400;font-size:.85rem">/ USDT</span></h2>
     <div style="font-size:.72rem;color:#8b949e;margin-top:2px">
-      Indicators van: ${s.ts_str ? new Date(s.ts_str).toLocaleString("nl-NL",{timeZone:"UTC"})+" UTC" : "—"}
+      ${t("dp_indicators_from")} ${s.ts_str ? new Date(s.ts_str).toLocaleString("nl-NL",{timeZone:"UTC"})+" UTC" : "—"}
     </div>
     ${s.signal ? `<div class="dp-verdict-bar" style="background:rgba(63,185,80,.1);border:1px solid ${vc};color:${vc};margin-top:12px">
       ${signalHtml(s.signal)} &nbsp; ${verdictHtml(s.verdict)} &nbsp; score ${s.setup_score || "—"}
@@ -488,31 +489,31 @@ function showDetail(sym) {
     ${interp}
 
     <div class="dp-section">
-      <h3>Actuele indicatoren (1h)</h3>
-      <div class="dp-row"><span class="dp-lbl">Live prijs</span><span>${livePrice != null ? "$"+livePrice.toLocaleString("en-US",{maximumFractionDigits:getPriceDecimals(livePrice)}) : "laden..."}</span></div>
+      <h3 id="dp-h-indicators"></h3>
+      <div class="dp-row"><span class="dp-lbl" id="dp-lbl-price"></span><span>${livePrice != null ? "$"+livePrice.toLocaleString("en-US",{maximumFractionDigits:getPriceDecimals(livePrice)}) : t("loading_price")}</span></div>
       <div class="dp-row"><span class="dp-lbl">RSI</span><span>${rsiHtml(s.rsi, s.rsi_zone)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">MACD histogram</span><span>${macdHtml(s.macd_hist)} (${s.macd_hist != null ? (s.macd_hist > 0 ? "+" : "") + s.macd_hist.toFixed(2) : "—"})</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_macd_hist")}</span><span>${macdHtml(s.macd_hist)} (${s.macd_hist != null ? (s.macd_hist > 0 ? "+" : "") + s.macd_hist.toFixed(2) : "—"})</span></div>
       <div class="dp-row"><span class="dp-lbl">ADX</span><span>${adxHtml(s.adx)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">EMA regime</span><span>${emaHtml(s.ema_bull)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">BB positie</span><span style="color:#8b949e">${s.bb_position || "—"}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Volume ratio</span><span style="color:${(s.volume_ratio||0)>1.5?"#3fb950":"#8b949e"}">${s.volume_ratio != null ? s.volume_ratio.toFixed(2)+"x gem." : "—"}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("col_ema")}</span><span>${emaHtml(s.ema_bull)}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_bb_position")}</span><span style="color:#8b949e">${s.bb_position || "—"}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_volume_ratio")}</span><span style="color:${(s.volume_ratio||0)>1.5?"#3fb950":"#8b949e"}">${s.volume_ratio != null ? s.volume_ratio.toFixed(2)+t("dp_volume_avg") : "—"}</span></div>
     </div>
 
     <div class="dp-section">
-      <h3>Historische kwaliteit — ${s.signal || "geen signaal"}</h3>
-      <div class="dp-row"><span class="dp-lbl">Verdict</span><span>${verdictHtml(s.verdict)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Setup score</span><span>${scoreHtml(s.setup_score, s.verdict)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Win% (1h)</span><span>${s.win_pct_1h != null ? s.win_pct_1h.toFixed(1)+"%" : "—"}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Gem. P&L (1h)</span><span>${pnlHtml(s.avg_1h)}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Aantal trades (n)</span><span>${s.n || "—"}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Edge strength</span><span style="color:#8b949e">${s.edge_strength || "—"}</span></div>
-      <div class="dp-row"><span class="dp-lbl">Regime fit</span><span style="color:#8b949e">${s.regime_fit || "—"}</span></div>
+      <h3>${t("dp_historical")} — ${s.signal || t("dp_no_signal")}</h3>
+      <div class="dp-row"><span class="dp-lbl">${t("col_verdict")}</span><span>${verdictHtml(s.verdict)}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("col_setup_score")}</span><span>${scoreHtml(s.setup_score, s.verdict)}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_win_pct_1h")}</span><span>${s.win_pct_1h != null ? s.win_pct_1h.toFixed(1)+"%" : "—"}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_avg_pnl_1h")}</span><span>${pnlHtml(s.avg_1h)}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_n_trades")}</span><span>${s.n || "—"}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_edge_strength")}</span><span style="color:#8b949e">${s.edge_strength || "—"}</span></div>
+      <div class="dp-row"><span class="dp-lbl">${t("dp_regime_fit")}</span><span style="color:#8b949e">${s.regime_fit || "—"}</span></div>
     </div>
 
     <div style="margin-top:20px">
       <a href="chart.html?symbol=${s.symbol}&interval=1h"
          style="display:block;text-align:center;padding:8px;background:#1f4068;color:#58a6ff;text-decoration:none;border-radius:6px;font-size:.82rem;">
-        &#128200; Open grafiek
+        &#128200; ${t("open_chart")}
       </a>
     </div>
   `;
@@ -544,7 +545,7 @@ async function loadData() {
     document.getElementById("sb-active").textContent = d.n_active || 0;
     document.getElementById("sb-sterk").textContent  = d.n_sterk  || 0;
     document.getElementById("sb-total").textContent  = d.total    || 0;
-    document.getElementById("sb-ts").textContent = "Bijgewerkt: " + new Date(d.ts).toLocaleTimeString("nl-NL");
+    document.getElementById("sb-ts").textContent = t("updated") + ": " + new Date(d.ts).toLocaleTimeString("nl-NL");
 
     document.getElementById("spinner").style.display = "none";
     document.getElementById("signals-table").style.display = "table";
@@ -555,12 +556,45 @@ async function loadData() {
   } catch(e) {
     document.getElementById("spinner").style.display = "none";
     const el = document.getElementById("error-msg");
-    el.textContent = `Fout bij laden: ${e.message}`;
+    el.textContent = `${t("error_loading")} ${e.message}`;
     el.style.display = "block";
     startCountdown();
   }
 }
 
+// ── i18n init ─────────────────────────────────────────────────────────────────
+function initI18n() {
+  document.documentElement.lang = LANG;
+  document.getElementById("page-title").textContent = t("title_live_signals") + " — OpenClaw Apex";
+  document.getElementById("h-title").textContent    = t("title_live_signals");
+  document.getElementById("h-nav-setup").textContent = t("nav_setup_intel");
+  document.getElementById("h-nav-dash").textContent  = t("nav_dashboard");
+  document.getElementById("logout-btn").textContent  = t("nav_logout");
+  document.getElementById("lbl-regime").textContent  = t("btc_regime");
+  document.getElementById("lbl-active").textContent  = t("active_signals");
+  document.getElementById("lbl-sterk").textContent   = t("sterk_active");
+  document.getElementById("lbl-total").textContent   = t("coins_monitored");
+  document.getElementById("lbl-filter").textContent  = t("filter_label");
+  document.getElementById("btn-all").textContent     = t("filter_all");
+  document.getElementById("btn-signal").textContent  = t("filter_signal");
+  document.getElementById("btn-sterk").textContent   = t("filter_sterk");
+  document.getElementById("lbl-auto-refresh").textContent = t("auto_refresh");
+  document.getElementById("lbl-refresh").textContent = t("refresh");
+  document.getElementById("th-coin").textContent    = t("col_coin");
+  document.getElementById("th-price").textContent   = t("col_price");
+  document.getElementById("th-rsi").textContent     = t("col_rsi");
+  document.getElementById("th-macd").textContent    = t("col_macd");
+  document.getElementById("th-adx").textContent     = t("col_adx");
+  document.getElementById("th-ema").textContent     = t("col_ema");
+  document.getElementById("th-signal").textContent  = t("col_signal");
+  document.getElementById("th-verdict").textContent = t("col_verdict");
+  document.getElementById("th-score").textContent   = t("col_score");
+  document.getElementById("th-win").textContent     = t("col_win_pct");
+  document.getElementById("th-avg").textContent     = t("col_avg_pnl");
+  document.getElementById("th-data").textContent    = t("col_data_from");
+}
+
+initI18n();
 loadData();
 </script>
 </body>

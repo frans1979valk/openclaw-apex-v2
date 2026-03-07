@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Setup Intelligence — OpenClaw Apex</title>
+<script src="i18n.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
@@ -245,7 +246,7 @@
   <span>&#128202;</span>
   <h1>Setup Intelligence</h1>
   <a class="nav-back" href="index.html">&#8592; Dashboard</a>
-  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+  <button id="logout-btn" onclick="logout()"></button>
 </header>
 
 <div id="market-bar">
@@ -269,20 +270,20 @@
     <div class="mbar-val cnt-skip" id="mb-skip">-</div>
     <div class="mbar-lbl">SKIP</div>
   </div>
-  <div id="ts-label">laden...</div>
+  <div id="ts-label"></div>
 </div>
 
 <div id="controls">
   <div class="filter-group">
-    <span style="font-size:.75rem;color:#8b949e">Filter:</span>
-    <button class="filter-btn active" onclick="setVerdictFilter('', this)">Alles</button>
+    <span id="filter-label" style="font-size:.75rem;color:#8b949e"></span>
+    <button id="filter-all-btn" class="filter-btn active" onclick="setVerdictFilter('', this)"></button>
     <button class="filter-btn v-sterk"    onclick="setVerdictFilter('STERK', this)">STERK</button>
     <button class="filter-btn v-toestaan" onclick="setVerdictFilter('TOESTAAN', this)">TOESTAAN</button>
     <button class="filter-btn v-zwak"     onclick="setVerdictFilter('TOESTAAN_ZWAK', this)">TOESTAAN ZWAK</button>
     <button class="filter-btn v-skip"     onclick="setVerdictFilter('SKIP', this)">SKIP</button>
   </div>
-  <input id="search-box" type="text" placeholder="Zoek coin..." oninput="renderTable()"/>
-  <span class="sort-lbl">Sorteer:</span>
+  <input id="search-box" type="text" placeholder="" oninput="renderTable()"/>
+  <span id="sort-label" class="sort-lbl"></span>
   <select class="sort-select" onchange="setSortField(this.value)">
     <option value="setup_score">Score</option>
     <option value="win_pct_1h">Win%</option>
@@ -298,7 +299,7 @@
       <thead>
         <tr>
           <th onclick="setSortField('symbol')">Coin</th>
-          <th onclick="setSortField('signal')">Signaal</th>
+          <th id="th-signal" onclick="setSortField('signal')"></th>
           <th onclick="setSortField('setup_score')">Score</th>
           <th onclick="setSortField('')">Verdict</th>
           <th onclick="setSortField('edge_strength')">Edge</th>
@@ -307,16 +308,16 @@
           <th onclick="setSortField('avg_1h')">P&amp;L 1h</th>
           <th onclick="setSortField('avg_4h')">P&amp;L 4h</th>
           <th onclick="setSortField('n')">n</th>
-          <th onclick="setSortField('last_signal_hours_ago')" title="Hoe lang geleden het signaal voor het laatste actief was">Laatste signaal</th>
+          <th id="th-last-signal" onclick="setSortField('last_signal_hours_ago')"></th>
         </tr>
       </thead>
       <tbody id="table-body"></tbody>
     </table>
-    <p id="no-results" style="display:none;color:#8b949e;font-size:.85rem;margin-top:20px">Geen setups gevonden voor dit filter.</p>
+    <p id="no-results" style="display:none;color:#8b949e;font-size:.85rem;margin-top:20px"></p>
   </div>
 
   <div id="detail-col">
-    <button id="detail-close" onclick="closeDetail()" title="Sluiten">&#10005;</button>
+    <button id="detail-close" onclick="closeDetail()">&#10005;</button>
     <div id="detail-content"></div>
   </div>
 </div>
@@ -408,10 +409,10 @@ function regimeChip(r) {
 // ── Laatste signaal formatter ──────────────────────────────────────────────────
 function lastSignalFmt(hours) {
   if (hours == null) return `<span style="color:#8b949e">—</span>`;
-  if (hours <= 6)   return `<span style="color:#3fb950;font-weight:600">Nu actief</span>`;
-  if (hours <= 24)  return `<span style="color:#3fb950">${Math.round(hours)}u geleden</span>`;
-  if (hours <= 72)  return `<span style="color:#d29922">${Math.round(hours/24)}d geleden</span>`;
-  return `<span style="color:#8b949e">${Math.round(hours/24)}d geleden</span>`;
+  if (hours <= 6)   return `<span style="color:#3fb950;font-weight:600">${t("signal_active")}</span>`;
+  if (hours <= 24)  return `<span style="color:#3fb950">${Math.round(hours)}${t("hours_ago")}</span>`;
+  if (hours <= 72)  return `<span style="color:#d29922">${Math.round(hours/24)}${t("days_ago")}</span>`;
+  return `<span style="color:#8b949e">${Math.round(hours/24)}${t("days_ago")}</span>`;
 }
 
 // ── PnL formatter ─────────────────────────────────────────────────────────────
@@ -521,42 +522,42 @@ function showDetail(origIdx) {
 
     <div class="verdict-strip">
       ${verdictBadge(s.verdict)}
-      <span style="font-size:.78rem;color:#c9d1d9">Systeem beoordeling</span>
+      <span style="font-size:.78rem;color:#c9d1d9">${t("si_system_verdict")}</span>
       <span class="verdict-strip-score">Score: <b style="color:${vcolor}">${s.setup_score}/100</b></span>
     </div>
 
     <div class="detail-section">
-      <h3>Statistieken (alle marktomstandigheden)</h3>
+      <h3>${t("si_stats_header")}</h3>
       <div class="detail-row">
-        <span class="detail-lbl">Aantal historisch (n)</span>
+        <span class="detail-lbl">${t("si_hist_count")}</span>
         <span class="detail-val">${s.n}</span>
       </div>
       <div class="detail-row">
-        <span class="detail-lbl">Win-rate 1h</span>
+        <span class="detail-lbl">${t("si_win_rate_1h")}</span>
         <span class="detail-val">${winFmt(s.win_pct_1h)}</span>
       </div>
       <div class="detail-row">
-        <span class="detail-lbl">Gem. P&amp;L 1h</span>
+        <span class="detail-lbl">${t("si_avg_pnl_1h_label")}</span>
         <span class="detail-val">${pnlFmt(s.avg_1h)}</span>
       </div>
       <div class="detail-row">
-        <span class="detail-lbl">Gem. P&amp;L 4h</span>
+        <span class="detail-lbl">${t("si_avg_pnl_4h_label")}</span>
         <span class="detail-val">${pnlFmt(s.avg_4h)}</span>
       </div>
       <div class="detail-row">
-        <span class="detail-lbl">Edge strength</span>
+        <span class="detail-lbl">${t("dp_edge_strength")}</span>
         <span class="detail-val">${edgeChip(s.edge_strength)}</span>
       </div>
     </div>
 
     <div class="detail-section">
-      <h3>BTC Regime Analyse</h3>
+      <h3>${t("si_regime_analysis")}</h3>
       <div class="detail-row">
-        <span class="detail-lbl">Huidig regime</span>
+        <span class="detail-lbl">${t("si_current_regime")}</span>
         <span class="detail-val" style="color:${regime==='bull'?'#3fb950':regime==='bear'?'#f85149':'#8b949e'}">${regime.toUpperCase()}</span>
       </div>
       <div class="detail-row">
-        <span class="detail-lbl">Regime fit</span>
+        <span class="detail-lbl">${t("dp_regime_fit")}</span>
         <span class="detail-val">${regimeChip(s.regime_fit)}</span>
       </div>
       <div class="regime-bar">
@@ -582,26 +583,24 @@ function showDetail(origIdx) {
 }
 
 function buildInterpretatie(s, regime, regimeWin, regimeN) {
-  const coin = s.symbol.replace("USDT","");
-
   // ── Blok 1: Kans (winrate) ────────────────────────────────────────────────
   const win = s.win_pct_1h;
   let kansTier, kansTxt;
   if (win == null) {
     kansTier = "grijs";
-    kansTxt = "Geen historische winrate-data beschikbaar voor deze setup.";
+    kansTxt = t("no_data_winrate");
   } else if (win >= 60) {
     kansTier = "groen";
-    kansTxt = `Kans hoog: deze setup werkte historisch vaak goed (${win.toFixed(1)}% winrate). Van de ${s.n} gevallen was ruim meer dan de helft winstgevend.`;
+    kansTxt = t("si_interp_kans_hoog").replace("{win}", win.toFixed(1)).replace("{n}", s.n);
   } else if (win >= 50) {
     kansTier = "groen";
-    kansTxt = `Kans redelijk: de setup werkte iets vaker wel dan niet (${win.toFixed(1)}% winrate over ${s.n} gevallen). Positief, maar niet uitzonderlijk sterk.`;
+    kansTxt = t("si_interp_kans_redelijk").replace("{win}", win.toFixed(1)).replace("{n}", s.n);
   } else if (win >= 40) {
     kansTier = "geel";
-    kansTxt = `Kans twijfelachtig: de setup had een winrate van ${win.toFixed(1)}% over ${s.n} gevallen. Minder dan de helft van de trades was winstgevend.`;
+    kansTxt = t("si_interp_kans_twijfel").replace("{win}", win.toFixed(1)).replace("{n}", s.n);
   } else {
     kansTier = "rood";
-    kansTxt = `Kans laag: slechts ${win.toFixed(1)}% van de ${s.n} historische gevallen was winstgevend. Deze setup verliest statistisch vaker dan hij wint.`;
+    kansTxt = t("si_interp_kans_laag").replace("{win}", win.toFixed(1)).replace("{n}", s.n);
   }
 
   // ── Blok 2: Verwachte beweging (avg pnl) ──────────────────────────────────
@@ -609,72 +608,72 @@ function buildInterpretatie(s, regime, regimeWin, regimeN) {
   let bewegingTier, bewegingTxt;
   if (pnl == null) {
     bewegingTier = "grijs";
-    bewegingTxt = "Geen gemiddelde P&L data beschikbaar voor deze setup.";
+    bewegingTxt = t("no_data_pnl");
   } else if (pnl >= 0.3) {
     bewegingTier = "groen";
-    bewegingTxt = `Sterke opwaartse beweging: de prijs steeg gemiddeld +${pnl.toFixed(3)}% binnen 1 uur na dit signaal. Dat is een significante beweging.`;
+    bewegingTxt = t("si_interp_beweging_sterk").replace("{pnl}", pnl.toFixed(3));
   } else if (pnl >= 0.05) {
     bewegingTier = "groen";
-    bewegingTxt = `Positieve beweging: de prijs steeg gemiddeld +${pnl.toFixed(3)}% binnen 1 uur. Klein maar consistent positief resultaat.`;
+    bewegingTxt = t("si_interp_beweging_pos").replace("{pnl}", pnl.toFixed(3));
   } else if (pnl >= -0.1) {
     bewegingTier = "geel";
-    bewegingTxt = `Neutrale beweging: de prijs bewoog gemiddeld ${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}% na 1 uur. Nauwelijks netto richting — wisselend resultaat.`;
+    bewegingTxt = t("si_interp_beweging_neutraal").replace("{pnl}", (pnl >= 0 ? "+" : "") + pnl.toFixed(3));
   } else {
     bewegingTier = "rood";
-    bewegingTxt = `Negatieve beweging: de prijs daalde gemiddeld ${pnl.toFixed(3)}% na 1 uur. Dit signaal leidde historisch vaker tot verlies.`;
+    bewegingTxt = t("si_interp_beweging_neg").replace("{pnl}", pnl.toFixed(3));
   }
 
   // ── Blok 3: Marktconditie (regime + recent_bias + regime_fit) ─────────────
   let conditieTier, conditieTxt;
   const bias = s.recent_bias || null;
   const regimeFit = s.regime_fit || "";
-  const regimeNaam = regime === "bull" ? "opgaande markt (BULL)"
-                   : regime === "bear" ? "dalende markt (BEAR)" : "onbekend regime";
+  const regimeNaam = regime === "bull" ? t("regime_bull")
+                   : regime === "bear" ? t("regime_bear") : t("si_regime_unknown");
   let biasTxt = "";
-  if      (bias === "bullish") biasTxt = " Recent momentum is positief (bullish).";
-  else if (bias === "bearish") biasTxt = " Recent momentum is negatief (bearish).";
+  if      (bias === "bullish") biasTxt = t("si_bias_bullish");
+  else if (bias === "bearish") biasTxt = t("si_bias_bearish");
   else if (bias)               biasTxt = ` Recent momentum: ${bias}.`;
 
   if (regime === "onbekend") {
     conditieTier = "grijs";
-    conditieTxt = `Het huidige marktregime is onbekend. Geen regime-analyse mogelijk.${biasTxt}`;
+    conditieTxt = t("si_interp_regime_onbekend").replace("{bias}", biasTxt);
   } else if (regimeFit.includes("voordeel")) {
     conditieTier = "groen";
-    conditieTxt = `Gunstig: de markt zit momenteel in een ${regimeNaam}. Historisch presteert deze setup juist beter in dit regime.${biasTxt}`;
+    conditieTxt = t("si_interp_regime_gunstig").replace("{regime}", regimeNaam).replace("{bias}", biasTxt);
   } else if (regimeFit.includes("nadeel")) {
     conditieTier = "rood";
-    conditieTxt = `Ongunstig: de markt zit momenteel in een ${regimeNaam}. Historisch presteert de setup slechter in dit regime.${biasTxt}`;
+    conditieTxt = t("si_interp_regime_ongunstig").replace("{regime}", regimeNaam).replace("{bias}", biasTxt);
   } else if (regime !== "onbekend" && regimeN != null && regimeN < 5) {
     conditieTier = "geel";
-    conditieTxt = `De markt zit in een ${regimeNaam}, maar er zijn te weinig historische gevallen in dit regime (n=${regimeN}) voor een betrouwbare uitspraak.${biasTxt}`;
+    conditieTxt = t("si_interp_regime_weinig_data").replace("{regime}", regimeNaam).replace("{n}", regimeN).replace("{bias}", biasTxt);
   } else {
     conditieTier = "geel";
-    const regimeWinTxt = regimeWin != null ? ` (win ${regimeWin.toFixed(1)}% in dit regime)` : "";
-    conditieTxt = `De markt zit momenteel in een ${regimeNaam}. De setup presteert vergelijkbaar onder beide marktomstandigheden${regimeWinTxt}.${biasTxt}`;
+    const regimeWinTxt = regimeWin != null ? t("si_interp_win_in_regime").replace("{win}", regimeWin.toFixed(1)) : "";
+    conditieTxt = t("si_interp_regime_vergelijkbaar").replace("{regime}", regimeNaam).replace("{win}", regimeWinTxt).replace("{bias}", biasTxt);
   }
 
   // ── Blok 4: Advies (verdict + setup_score) ────────────────────────────────
   let adviesTier, adviesTxt;
   if (s.verdict === "STERK") {
     adviesTier = "groen";
-    adviesTxt = `Het systeem beschouwt dit als een sterke kans (score ${s.setup_score}/100). Alle indicatoren wijzen in dezelfde richting: hoge winrate, positieve P&L en sterke statistische basis.`;
+    adviesTxt = t("si_interp_advies_sterk").replace("{score}", s.setup_score);
   } else if (s.verdict === "TOESTAAN") {
     adviesTier = "geel";
-    adviesTxt = `Het systeem staat dit signaal toe (score ${s.setup_score}/100). De statistieken zijn voldoende, maar er is geen uitzonderlijk sterke edge aanwezig.`;
+    adviesTxt = t("si_interp_advies_toestaan").replace("{score}", s.setup_score);
   } else if (s.verdict === "TOESTAAN_ZWAK") {
     adviesTier = "geel";
-    adviesTxt = `Het systeem staat dit signaal zwak toe (score ${s.setup_score}/100). De edge is beperkt — gebruik dit signaal alleen met extra bevestiging.`;
+    adviesTxt = t("si_interp_advies_zwak").replace("{score}", s.setup_score);
   } else if (s.verdict === "SKIP") {
     adviesTier = "rood";
-    adviesTxt = `Het systeem slaat deze setup gewoonlijk over (score ${s.setup_score}/100). De statistieken rechtvaardigen geen positie: de kans op verlies is statistisch te groot.`;
+    adviesTxt = t("si_interp_advies_skip").replace("{score}", s.setup_score);
   } else {
     adviesTier = "grijs";
-    adviesTxt = `Onvoldoende data om een betrouwbaar advies te geven (score ${s.setup_score}/100).`;
+    adviesTxt = t("si_interp_advies_onbekend").replace("{score}", s.setup_score);
   }
 
   // ── HTML bouwen ───────────────────────────────────────────────────────────
   const icons = { groen: "&#10003;", geel: "&#126;", rood: "&#10005;", grijs: "?" };
-  const titels = ["Kans", "Verwachte beweging", "Marktconditie", "Advies"];
+  const titels = [t("si_title_kans"), t("si_title_beweging"), t("si_title_markt"), t("si_title_advies")];
   const blokken = [
     { tier: kansTier,      tekst: kansTxt      },
     { tier: bewegingTier,  tekst: bewegingTxt  },
@@ -720,8 +719,8 @@ async function loadData() {
     document.getElementById("mb-zwak").textContent     = vc.TOESTAAN_ZWAK || 0;
     document.getElementById("mb-skip").textContent     = vc.SKIP     || 0;
 
-    const ts = data.ts ? new Date(data.ts).toLocaleTimeString("nl-NL") : "—";
-    document.getElementById("ts-label").textContent = `Laatste update: ${ts} — ${data.total} setups`;
+    const ts = data.ts ? new Date(data.ts).toLocaleTimeString() : "—";
+    document.getElementById("ts-label").textContent = `${t("si_last_update_prefix")} ${ts} — ${data.total} setups`;
 
     document.getElementById("spinner").style.display = "none";
     document.getElementById("setup-table").style.display = "table";
@@ -729,10 +728,30 @@ async function loadData() {
     renderTable();
   } catch(e) {
     document.getElementById("spinner").innerHTML =
-      `<p style="color:#f85149;font-size:.85rem;text-align:center">Fout bij laden: ${e.message}</p>`;
+      `<p style="color:#f85149;font-size:.85rem;text-align:center">${t("error_loading")} ${e.message}</p>`;
   }
 }
 
+function initI18n() {
+  document.getElementById("logout-btn").textContent = t("nav_logout");
+  document.getElementById("ts-label").textContent = t("loading_price");
+  document.getElementById("filter-label").textContent = t("filter_label");
+  document.getElementById("filter-all-btn").textContent = t("filter_all");
+  document.getElementById("search-box").placeholder = t("coin_placeholder");
+  document.getElementById("sort-label").textContent = t("si_sort_label");
+  document.getElementById("th-signal").textContent = t("si_th_signal");
+  document.getElementById("th-last-signal").textContent = t("col_last_signal");
+  document.getElementById("th-last-signal").title = t("last_signal_tooltip");
+  document.getElementById("no-results").textContent = t("si_no_setups");
+  document.getElementById("detail-close").title = t("close");
+  const sortSel = document.querySelector("select.sort-select");
+  if (sortSel) {
+    sortSel.options[2].textContent = t("si_sort_avg_pnl");
+    sortSel.options[3].textContent = t("si_sort_count");
+  }
+}
+
+initI18n();
 loadData();
 </script>
 </body>
