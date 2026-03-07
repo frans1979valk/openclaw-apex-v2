@@ -1,18 +1,48 @@
 services:
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ./secrets/postgres.env
+    environment:
+      POSTGRES_DB: apex
+      POSTGRES_USER: apex
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - trade_net
+      - agent_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   apex_engine:
     build: ./apex_engine
     env_file:
       - ./secrets/apex.env
+      - ./secrets/postgres.env
+    environment:
+      - INDICATOR_ENGINE_URL=http://indicator_engine:8099
     networks:
       - trade_net
     volumes:
       - apex_data:/var/apex
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      indicator_engine:
+        condition: service_healthy
 
   control_api:
     build: ./control_api
     env_file:
       - ./secrets/control_api.env
+      - ./secrets/postgres.env
     networks:
       - trade_net
       - agent_net
@@ -21,6 +51,9 @@ services:
     volumes:
       - apex_data:/var/apex
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   openclaw:
     build: ./openclaw
@@ -38,9 +71,11 @@ services:
       - agent_net
     ports:
       - "0.0.0.0:3000:80"
+      - "0.0.0.0:3443:443"
     volumes:
       - ./dashboard:/usr/share/nginx/html:ro
       - ./dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dashboard/ssl:/etc/nginx/ssl:ro
     restart: unless-stopped
 
   openclaw_runtime:
@@ -75,14 +110,18 @@ services:
       - ./skills:/workspace/skills:ro
       - ./openclaw_tools/scripts:/workspace/tools:ro
       - apex_data:/var/apex
+      - openclaw_logs:/tmp/openclaw
     networks:
       - agent_net
     ports:
       - "127.0.0.1:18789:18789"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
     healthcheck:
-      # /health kan een HTML 200 teruggeven (bekende bug).
-      # Check dat de response JSON bevat met "status" key.
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:18789/health 2>/dev/null | grep -q '\"status\"' || exit 1"]
+      # /health geeft HTML terug — check alleen of de poort reageert
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:18789/health 2>/dev/null && exit 0 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -110,7 +149,7 @@ services:
           cpus: "0.5"
           memory: 256M
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8095/health | grep -q '\"status\"' || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/health')\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -130,7 +169,7 @@ services:
     ports:
       - "127.0.0.1:4000:4000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:4000/cc/health | grep -q '\"status\"' || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/cc/health')\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -147,6 +186,8 @@ services:
       - "127.0.0.1:8097:8097"
     volumes:
       - apex_data:/var/apex:ro
+    env_file:
+      - ./secrets/postgres.env
     environment:
       - ORACLE_URL=http://market_oracle_sandbox:8095
       - BINANCE_BASE=https://api.binance.com
@@ -158,7 +199,7 @@ services:
           cpus: "0.5"
           memory: 256M
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8097/health | grep -q '\"status\"' || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/health')\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -184,19 +225,85 @@ services:
       - ANALYSIS_HOUR=3
     env_file:
       - ./secrets/apex.env
+      - ./secrets/postgres.env
     networks:
       - agent_net
     deploy:
       resources:
         limits:
           cpus: "0.3"
-          memory: 128M
+          memory: 256M
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8098/health | grep -q '\"status\"' || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8098/health')\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
     restart: unless-stopped
+
+  # ── Indicator Engine ────────────────────────────────────────────────────────
+  # Historische OHLCV import, indicator berekening en pattern matching.
+  # API voor Jojo1: /signal/{coin}, /indicators/{coin}, /patterns/{coin}
+  indicator_engine:
+    build: ./indicator_engine
+    ports:
+      - "127.0.0.1:8099:8099"
+    env_file:
+      - ./secrets/postgres.env
+    environment:
+      - BINANCE_BASE=https://api.binance.com
+      - UPDATE_INTERVAL_MINUTES=60
+      - SAFE_COINS=BTCUSDT,ETHUSDT,SOLUSDT,AAVEUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,UNIUSDT,LTCUSDT,DOGEUSDT,XRPUSDT,BNBUSDT,ADAUSDT,ATOMUSDT,ARBUSDT,APTUSDT,SEIUSDT,SUIUSDT,TRXUSDT,NEARUSDT,BCHUSDT,ICPUSDT,HBARUSDT,PEPEUSDT,WIFUSDT,WLDUSDT,ENAUSDT,TAOUSDT,ZECUSDT,OPUSDT,XLMUSDT,SHIBUSDT,FETUSDT,BONKUSDT,FLOKIUSDT,RENDERUSDT,INJUSDT,TIAUSDT,ALGOUSDT,VETUSDT
+    networks:
+      - agent_net
+      - trade_net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── MCP Server (Claude web/desktop toegang) ─────────────────────────────────
+  # Geeft Claude direct toegang tot alle platform data via Model Context Protocol.
+  # Intern op agent_net — toegankelijk via Cloudflare Tunnel (HTTPS).
+  mcp_server:
+    build: ./mcp_server
+    env_file:
+      - ./secrets/mcp_server.env
+    networks:
+      - agent_net
+    ports:
+      - "127.0.0.1:8100:8100"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 128M
+    restart: unless-stopped
+    depends_on:
+      - control_api
+      - indicator_engine
+
+  # ── Cloudflare Tunnel (HTTPS voor MCP) ──────────────────────────────────────
+  # Geeft gratis geldig HTTPS certificaat voor de MCP server.
+  # URL staat in logs: docker logs cloudflare_tunnel | grep trycloudflare
+  cloudflare_tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --url http://mcp_server:8100
+    networks:
+      - agent_net
+    restart: unless-stopped
+    depends_on:
+      - mcp_server
 
   tg_coordinator_bot:
     build:
@@ -217,6 +324,9 @@ services:
     networks:
       - agent_net
     restart: unless-stopped
+    depends_on:
+      - control_api
+      - indicator_engine
 
 networks:
   trade_net:
@@ -226,3 +336,5 @@ volumes:
   apex_data:
   openclaw_workspace:
   cc_data:
+  postgres_data:
+  openclaw_logs:

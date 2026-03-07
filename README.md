@@ -1,305 +1,176 @@
-# OpenClaw Trading Platform — BloFin Demo v2
+# OpenClaw Apex Trading Platform v2
 
-Een volledig autonome crypto trading bot met AI-gestuurde coin selectie, multi-exchange analyse, zelfoptimalisatie en Telegram bediening. Draait op BloFin in demo (paper trading) modus.
+Een volledig autonome AI crypto trading bot met 16 Docker containers, 40 coins, 4 jaar historische data en een Sniper Bot. Draait op BloFin in **demo (paper trading)** mode.
+
+> Volledige documentatie: [docs/PLATFORM_INFO.md](docs/PLATFORM_INFO.md)
 
 ---
 
-## Architectuur
+## Architectuur (16 containers)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     OpenClaw Platform                        │
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐ │
-│  │ apex_engine │───▶│ control_api │◀───│    openclaw     │ │
-│  │  (trading)  │    │  (hersenen) │    │  (leer-agent)   │ │
-│  └─────────────┘    └──────┬──────┘    └─────────────────┘ │
-│                            │                                 │
-│  ┌─────────────┐    ┌──────▼──────┐    ┌─────────────────┐ │
-│  │  dashboard  │◀───│  SQLite DB  │    │  tg_bots (2x)   │ │
-│  │  (port 3000)│    │  /var/apex  │    │  Telegram UI    │ │
-│  └─────────────┘    └─────────────┘    └─────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Containers
-
-| Service | Beschrijving | Port |
+| Service | Beschrijving | Poort |
 |---|---|---|
-| `apex_engine` | Trading engine — signalen, orders, BloFin executor | — |
-| `control_api` | REST API + state manager + auth | 8080 |
-| `openclaw` | Autonome leer-agent (Kimi + ClawBot) | — |
-| `dashboard` | Web controlecentrum (Nginx) | **3000** |
-| `tg_discuss_bot` | Telegram discussie + commando interface | — |
-| `tg_coordinator_bot` | Telegram coördinatie bot | — |
+| `apex_engine` | Trading engine — AI filters, signalen, BloFin demo orders | — |
+| `control_api` | REST API + config + proposals + auth | 8080 |
+| `indicator_engine` | 40 coins x 4jr historische data + TA + Sniper Bot | 8099 |
+| `postgres` | PostgreSQL 16 database (17 tabellen) | 5432 |
+| `openclaw_gateway` | Jojo1 AI operator (Claude Sonnet 4.6 + Telegram) | 18789 |
+| `tg_discuss_bot` | Kimi AI chat bot (@franscryptoinlog_bot) | — |
+| `tg_coordinator_bot` | Elke 30min marktrapport naar Telegram | — |
+| `command_center` | Beveiligde webinterface (Telegram OTP auth) | 4000 |
+| `jojo_analytics` | TA indicators + DB queries service | 8097 |
+| `kimi_pattern_agent` | Nachtelijke patroonanalyse (03:00 dagelijks) | 8098 |
+| `market_oracle_sandbox` | Publieke RSS + Yahoo Finance (geen API keys) | 8095 |
+| `dashboard` | Nginx web dashboard | 3000 |
+| `openclaw` / `openclaw_runtime` | OpenClaw framework runtime | — |
+| `mcp_server` | MCP server voor Claude Web (staat uit) | 8100 |
+| `cloudflare_tunnel` | HTTPS voor MCP (staat uit) | — |
 
 ---
 
 ## Features
 
-### Trading Engine (apex_engine)
-- **Kimi AI coin selectie** — selecteert elke cyclus de 5 beste USDT pairs op basis van volume, RSI en marktdata
-- **BloFin spot trading** — volledig geïntegreerd met BloFin demo API
-- **Multi-timeframe signalen** — BUY, SELL, HOLD, PERFECT_DAY, BREAKOUT_BULL, MOMENTUM, DANGER
-- **Pre-crash detector** — blokkeert kopen bij score > 60/100
-- **Exchange Intel** — gewogen consensus van 5 exchanges (Coinbase 35%, Binance 25%, Bybit 20%, OKX 12%, Kraken 8%)
-- **Flash crash detectie** — pauzeer automatisch bij plotselinge prijsdaling
-- **Nieuws monitor** — CryptoPanic integratie
-- **Coin whitelist** — 40 veilige coins (SAFE_COINS) + BloFin-beschikbare coins met Telegram goedkeuring
+### Trading Filters (apex_engine)
+1. **Trading halt** — hardcoded stop via `trading_halt.json`
+2. **Skip coins** — configureerbaar via proposals
+3. **BTC EMA200 filter (4h)** — geen longs als BTC bearish op 4h
+4. **BTC EMA21/55 filter (1h)** — geen altcoin longs in bear market
+5. **Pre-crash score** — geblokkeerd bij score >= 60/100
+6. **RSI filter** — RSI < drempel (default 30)
+7. **RSI chop zone** — geen BUY in RSI 30-55 neutrale zone
+8. **Signal blacklist** — automatisch op basis van historische PnL
+9. **Pattern engine** — 1h + 4h bevestiging vereist
+10. **Max posities** — default 4 gelijktijdige posities
 
-### Leer-agent (openclaw)
-- **Learning loop** — elke 30 min: analyseert signal performance → Kimi optimaliseert RSI/stoploss parameters
-- **Backtest loop** — elke 60 min: historische backtest voor gevolgde coins
-- **Beslissingsloop** — elke 15 min: ClawBot (Claude) autonome marktanalyse
-- **Veiligheidsgrenzen** — parameters nooit buiten hardcoded PARAM_BOUNDS
-- **Max 3 parameterwijzigingen per dag**
+### Indicator Engine (40 coins, 4 jaar data)
+- RSI, MACD, EMA21/55/200, Bollinger Bands, ADX, StochRSI, ATR
+- Historische patroon matching + win rates
+- Backtest op 4 jaar data
+- **Reverse backtest**: vindt pre-crash fingerprints
+- **Sniper Bot**: wacht op perfecte entry condities
 
-### Dashboard (port 3000)
-- Live prijs feeds (SSE)
-- Balans en P&L tracking
-- Signal performance tabel
-- Multi-exchange prijsvergelijking (6 exchanges)
-- Pre-crash meter
-- Historische data grafieken
-- OTP login (via Telegram)
+### Sniper Bot
+```
+/sniper dip BTC [rsi=28]           -- wacht op dip entry
+/sniper short ETH [rsi=68]         -- wacht op short entry
+/sniper niveau BTC target=80000    -- prijs alert
+/sniper breakout SOL               -- breakout conditie
+/sniper list / cancel <id>
+/sniper reverse BTC [threshold=-5] -- crash analyse
+```
 
-### Telegram Interface
-- `/status` — marktoverzicht
-- `/coins` — Kimi's coin selectie met redenering
-- `/balance` — demo balans en P&L
-- `/backtest [SYMBOL]` — historische backtest
-- `/stop` — noodstop
-- `/start` — hervatten
-- `/pauzeer [min]` — tijdelijke pauze
-- `/coingoedkeuren` — nieuwe coins goedkeuren/afwijzen
-- `/clawbot [sonnet|haiku]` — Claude model instellen
-- `/zoek [query]` — web search via DuckDuckGo
+### MCP Server (Claude Web toegang)
+Wanneer Jojo geen credits heeft, kan Claude Web alsnog alle data raadplegen:
+```bash
+docker compose up -d mcp_server cloudflare_tunnel
+docker logs ...-cloudflare_tunnel-1 | grep trycloudflare  # HTTPS URL
+```
+Token: zie `secrets/mcp_server.env`
 
 ---
 
-## Installatie
+## Quick Start
 
-### Vereisten
-- Docker + Docker Compose
-- Python 3.12+ (alleen voor lokale ontwikkeling)
-- API keys (zie hieronder)
-
-### Stap 1: Kloon de repo
 ```bash
+# 1. Clone
 git clone https://github.com/frans1979valk/openclaw-apex-v2.git
 cd openclaw-apex-v2
-```
 
-### Stap 2: Kopieer en vul de secrets in
-```bash
-cp secrets/apex.env.example              secrets/apex.env
-cp secrets/control_api.env.example       secrets/control_api.env
-cp secrets/openclaw.env.example          secrets/openclaw.env
-cp secrets/telegram_coordinator.env.example  secrets/telegram_coordinator.env
-cp secrets/telegram_discuss.env.example  secrets/telegram_discuss.env
-```
+# 2. Secrets aanmaken (zie secrets/*.env.example)
+# Vul alle *.env bestanden in met jouw API keys
 
-Vul de `.env` bestanden in met jouw API keys (zie sectie API Keys hieronder).
-
-### Stap 3: Start het platform
-```bash
+# 3. Starten
 docker compose up -d
-```
 
-### Stap 4: Open het dashboard
-```
-http://jouw-server-ip:3000
-```
-
----
-
-## API Keys
-
-| Key | Waar te krijgen | Env bestand |
-|---|---|---|
-| `BLOFIN_API_KEY/SECRET/PASSPHRASE` | [blofin.com](https://blofin.com) → API Management | `apex.env` |
-| `KIMI_API_KEY` (Moonshot) | [platform.moonshot.cn](https://platform.moonshot.cn) | `apex.env`, `openclaw.env`, `telegram_discuss.env` |
-| `ANTHROPIC_API_KEY` (Claude) | [console.anthropic.com](https://console.anthropic.com) | `openclaw.env` |
-| `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) op Telegram | `telegram_*.env` |
-| `TELEGRAM_ALLOWED_USERS` | Jouw Telegram user ID (via [@userinfobot](https://t.me/userinfobot)) | `telegram_discuss.env` |
-| `CRYPTOPANIC_TOKEN` | [cryptopanic.com/developers/api](https://cryptopanic.com/developers/api/) (gratis) | `apex.env` |
-
----
-
-## Configuratie
-
-### apex.env — Trading parameters
-```env
-TRADING_MODE=demo          # demo of live
-ALLOW_LIVE=false           # zet op true voor echte trades
-PRE_CRASH_BUY_BLOCK=60     # kopen geblokkeerd boven dit getal (0-100)
-EXCHANGE_INTEL_ENABLED=true
-```
-
-### control_api.env — Veiligheidsgrenzen
-```env
-MIN_PROFIT_FACTOR=1.15     # minimum profit factor voor auto-apply
-MAX_DRAWDOWN_PCT=6         # maximale drawdown
-MAX_APPLIES_PER_DAY=3      # max parameterwijzigingen per dag
-```
-
-### Parameter bounds (hardcoded in openclaw/bot.py)
-```python
-PARAM_BOUNDS = {
-    "rsi_buy_threshold":  (20, 40),
-    "rsi_sell_threshold": (60, 80),
-    "stoploss_pct":       (1.5, 6.0),
-    "takeprofit_pct":     (3.0, 12.0),
-    "position_size_base": (1, 5),
-}
+# 4. Controleer
+docker compose ps
+curl http://localhost:8080/balance -H "X-API-KEY: <token>"
+curl http://localhost:8099/health
 ```
 
 ---
 
-## Veiligheid
+## Config aanpassen (proposals)
 
-- `secrets/*.env` bestanden zijn uitgesloten van git (via `.gitignore`)
-- Dashboard gebruikt OTP authenticatie via Telegram
-- Control API gebruikt bearer token authenticatie
-- Trading is standaard in **demo modus** (`ALLOW_LIVE=false`)
-- Noodstop via `/stop` in Telegram of dashboard
-- Coin selectie vereist Telegram goedkeuring voor nieuwe/onbekende coins
+```bash
+curl -X POST http://localhost:8080/config/propose \
+  -H "X-API-KEY: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "Dev",
+    "params": {
+      "rsi_buy_threshold": 28,
+      "rsi_chop_max": 55,
+      "max_positions": 3,
+      "skip_coins": ["DOTUSDT", "UNIUSDT"]
+    },
+    "reason": "Verbeterde filters"
+  }'
 
----
-
-## OpenClaw Framework Integratie
-
-Dit platform integreert het [openclaw/openclaw](https://github.com/openclaw/openclaw) framework als multi-agent runtime.
-
-### Architectuur
-
-```
-┌─────────────────────────────────────────────────────┐
-│                openclaw_runtime                      │
-│  ┌──────────────┐ ┌──────────────┐ ┌─────────────┐  │
-│  │ research_    │ │ strategy_    │ │ risk_       │  │
-│  │ agent        │ │ agent        │ │ agent       │  │
-│  │ (read-only)  │ │ (propose)    │ │ (pause)     │  │
-│  └──────┬───────┘ └──────┬───────┘ └──────┬──────┘  │
-│         └────────────────┼────────────────┘          │
-│                    Kimi LLM (Moonshot)                │
-└─────────────────────────┬───────────────────────────┘
-                          │ HTTP tools
-                          ▼
-              ┌───────────────────────┐
-              │     control_api        │
-              │  :8080 (FastAPI)       │
-              └───────────┬───────────┘
-                          │
-              ┌───────────▼───────────┐
-              │     apex_engine        │
-              │  (BloFin demo trades)  │
-              └───────────────────────┘
-```
-
-### Agents
-
-| Agent | Interval | Bevoegdheden |
-|-------|----------|--------------|
-| `research_agent` | 1 uur | Lezen: status, backtest, nieuws |
-| `strategy_agent` | 2 uur | + Voorstellen: propose_params |
-| `risk_agent` | 30 min | + Schrijven: pause/resume trading |
-
-### Agent endpoints (openclaw_runtime :8090)
-
-```
-POST /agents/research   — handmatig research starten
-POST /agents/strategy   — handmatig strategy starten
-POST /agents/risk       — handmatig risk check starten
-GET  /agents/status     — overzicht intervals + tools
-GET  /health            — health check
-```
-
-### Beschikbare tools
-
-Zie `openclaw_tools/registry.json` voor de volledige registry.
-
-| Tool | Schrijf | Beschrijving |
-|------|---------|--------------|
-| `tool_status` | Nee | Markt + engine status |
-| `tool_run_backtest` | Nee | Backtest uitvoeren |
-| `tool_fetch_news` | Nee | Recente events |
-| `tool_propose_params` | Ja | Parameter voorstel indienen |
-| `tool_apply_proposal` | Ja | Voorstel toepassen (vereist /ok) |
-| `tool_pause_trading` | Ja | Trading pauzeren |
-| `tool_resume_trading` | Ja | Trading hervatten |
-
-### Parameter grenzen (PARAM_BOUNDS)
-
-| Parameter | Min | Max |
-|-----------|-----|-----|
-| `rsi_buy_threshold` | 20 | 40 |
-| `rsi_sell_threshold` | 60 | 80 |
-| `stoploss_pct` | 1.5 | 6.0 |
-| `takeprofit_pct` | 3.0 | 12.0 |
-| `position_size_base` | 1 | 5 |
-
-### Verschil openclaw.bot vs openclaw/openclaw vs dit platform
-
-| | openclaw.bot | openclaw/openclaw | Dit platform |
-|-|-------------|-------------------|--------------|
-| Type | Chat aggregator app | TypeScript AI framework | Python trading platform |
-| Doel | Chat UI met meerdere AI's | Personal AI agent runtime | Crypto auto-trading |
-| Basis | Commercieel product | Open source framework | Dit repo |
-
----
-
-## Projectstructuur
-
-```
-openclaw-apex-v2/
-├── apex_engine/           # Trading engine
-│   └── app/
-│       ├── core/
-│       │   ├── indicators.py      # RSI, MACD, ATR berekeningen
-│       │   ├── kimi_selector.py   # AI coin selectie
-│       │   ├── pre_crash.py       # Crash detectie
-│       │   ├── data_logger.py     # Historische data opslag
-│       │   └── db.py              # SQLite schema
-│       └── exchanges/
-│           ├── binance_feed.py    # Binance + BloFin feed
-│           └── bybit_feed.py      # Bybit feed
-├── control_api/           # REST API (FastAPI)
-│   └── app/server.py
-├── openclaw/              # Leer-agent (Claude + Kimi)
-│   ├── bot.py
-│   └── clawbot.py
-├── openclaw_runtime/      # Multi-agent orchestrator (nieuw)
-│   ├── main.py            # FastAPI + agent runner
-│   └── Dockerfile
-├── openclaw_tools/        # Agent tools (nieuw)
-│   ├── registry.json      # Tool registry
-│   ├── scripts/           # tool_*.py scripts
-│   └── prompts/           # *_agent.md prompts
-├── openclaw_framework/    # openclaw/openclaw submodule (nieuw)
-│   └── Dockerfile.runtime # Node.js 22 gateway build
-├── dashboard/             # Web UI (HTML/JS/Nginx)
-│   └── index.html
-├── telegram/
-│   ├── discuss_bot/       # Discussie + commando bot
-│   └── coordinator_bot/   # Coördinatie bot
-├── secrets/               # API keys (NIET in git)
-│   ├── *.env              # Echte keys (gitignored)
-│   └── *.env.example      # Templates (in git)
-├── install.sh             # Eerste installatie
-├── update.sh              # Update naar laatste versie
-├── doctor.sh              # Diagnose platform health
-└── docker-compose.yml
+curl -X POST http://localhost:8080/proposals/1/apply \
+  -H "X-API-KEY: <token>"
 ```
 
 ---
 
-## Bijdragen
+## Telegram bots
 
-Dit is een privé project. Voel je vrij om te forken voor eigen gebruik.
+| Bot | Handle | Functie |
+|-----|--------|---------|
+| Jojo1 | @franstest1_bot | AI operator (Claude) |
+| Kimi Chat | @franscryptoinlog_bot | Marktanalyse + Sniper |
+
+**Kimi Chat commando's:**
+```
+/status        -- marktoverzicht
+/balance       -- demo balans
+/patroon BTC   -- historische patroonanalyse
+/signal ETH 4h -- indicator signaal
+/backtest BTC  -- strategie backtest
+/sniper dip BTC -- sniper instellen
+/stop / /start -- trading beheer
+```
 
 ---
 
-## Licentie
+## 40 Gevolgde Coins
 
-Privé gebruik. Geen garanties — gebruik op eigen risico. Crypto trading brengt financiële risico's met zich mee.
+**Origineel (17):** BTC, ETH, SOL, AAVE, AVAX, LINK, DOT, UNI, LTC, DOGE, XRP, BNB, ADA, ATOM, ARB, APT, SEI
+
+**Nieuw toegevoegd (23):** SUI, TRX, NEAR, BCH, ICP, HBAR, PEPE, WIF, WLD, ENA, TAO, ZEC, OP, XLM, SHIB, FET, BONK, FLOKI, RENDER, INJ, TIA, ALGO, VET
+
+---
+
+## Secrets
+
+Alle secrets in `secrets/*.env` — **nooit in git**.
+
+| Bestand | Inhoud |
+|---------|--------|
+| `apex.env` | BloFin API + Kimi key (apex_engine agents) |
+| `postgres.env` | DATABASE_URL + POSTGRES_PASSWORD |
+| `openclaw_gateway.env` | ANTHROPIC_API_KEY voor Jojo1 |
+| `telegram_discuss.env` | Kimi bot token + KIMI_API_KEY |
+| `mcp_server.env` | MCP_AUTH_TOKEN |
+
+---
+
+## Veiligheidsregels
+
+- `TRADING_MODE=demo` en `ALLOW_LIVE=false` zijn hardcoded
+- PARAM_BOUNDS gehandhaafd door control_api
+- Max 3 config wijzigingen per dag
+- Max dagverlies 5% automatische pauze
+- Jojo1 kan nooit live trading inschakelen
+
+---
+
+## Documentatie
+
+- [docs/PLATFORM_INFO.md](docs/PLATFORM_INFO.md) — volledige technische documentatie
+- [docs/SYSTEM_FULL.md](docs/SYSTEM_FULL.md) — uitgebreide systeemdocumentatie
+- [docs/INDICATOR_ENGINE.md](docs/INDICATOR_ENGINE.md) — indicator engine details
+
+---
+
+*Stack: Python 3.12, FastAPI, PostgreSQL 16, TA-Lib, Docker Compose, Claude Sonnet 4.6, Kimi moonshot-v1-32k, FastMCP 3.1*

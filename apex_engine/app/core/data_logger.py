@@ -13,9 +13,10 @@ De AI kan via /history/{symbol} en /market-events inzichten halen uit
 historische data: "vorige keer dat de crash score >70 was, daalde de prijs
 gemiddeld X% in de volgende 30 minuten."
 """
-import sqlite3, json, logging, time
+import json, logging, time
 from datetime import datetime, timezone
 from typing import Optional
+from db_compat import get_conn, adapt_query
 
 log = logging.getLogger("data_logger")
 
@@ -42,8 +43,8 @@ class DataLogger:
     def __init__(self, db_path: str):
         self._db = db_path
 
-    def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db)
+    def _conn(self):
+        return get_conn()
 
     # ── Prijs snapshot ─────────────────────────────────────────────────────
 
@@ -66,10 +67,11 @@ class DataLogger:
         ts = datetime.now(timezone.utc).isoformat()
         try:
             conn = self._conn()
-            conn.execute(
-                """INSERT INTO price_snapshots
+            cur = conn.cursor()
+            cur.execute(
+                adapt_query("""INSERT INTO price_snapshots
                    (ts, symbol, price, rsi, volume_usdt, signal, change_pct, atr, tf_bias)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""),
                 (ts, symbol, price, rsi, volume_usdt, signal, change_pct, atr, tf_bias),
             )
             conn.commit()
@@ -99,10 +101,11 @@ class DataLogger:
         ts = datetime.now(timezone.utc).isoformat()
         try:
             conn = self._conn()
-            conn.execute(
-                """INSERT INTO crash_score_log
+            cur = conn.cursor()
+            cur.execute(
+                adapt_query("""INSERT INTO crash_score_log
                    (ts, symbol, score, ob_pct, vol_pct, rsi_pct, mom_pct)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?)"""),
                 (ts, symbol, score, ob_pct, vol_pct, rsi_pct, mom_pct),
             )
             conn.commit()
@@ -130,11 +133,12 @@ class DataLogger:
         ts = datetime.now(timezone.utc).isoformat()
         try:
             conn = self._conn()
-            conn.execute(
-                """INSERT INTO exchange_consensus_log
+            cur = conn.cursor()
+            cur.execute(
+                adapt_query("""INSERT INTO exchange_consensus_log
                    (ts, symbol, consensus, coinbase_price, binance_price, bybit_price,
                     okx_price, kraken_price, blofin_price, divergence_pct, coinbase_lead)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""),
                 (
                     ts, symbol, consensus,
                     prices.get("coinbase"), prices.get("binance"), prices.get("bybit"),
@@ -171,10 +175,11 @@ class DataLogger:
         ts = datetime.now(timezone.utc).isoformat()
         try:
             conn = self._conn()
-            conn.execute(
-                """INSERT INTO market_events
+            cur = conn.cursor()
+            cur.execute(
+                adapt_query("""INSERT INTO market_events
                    (ts, event_type, symbol, severity, value, description, payload_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?)"""),
                 (
                     ts, event_type, symbol, severity, value, description,
                     json.dumps(payload or {}, ensure_ascii=False),
@@ -192,14 +197,16 @@ class DataLogger:
         """Haal recente prijs snapshots op (voor AI context)."""
         try:
             conn = self._conn()
-            rows = conn.execute(
+            cur = conn.cursor()
+            cur.execute(adapt_query(
                 """SELECT ts, price, rsi, signal, change_pct, tf_bias
                    FROM price_snapshots
                    WHERE symbol=?
                    AND ts >= datetime('now', ?)
-                   ORDER BY ts DESC LIMIT 200""",
+                   ORDER BY ts DESC LIMIT 200"""),
                 (symbol, f"-{hours} hours"),
-            ).fetchall()
+            )
+            rows = cur.fetchall()
             conn.close()
             return [
                 {"ts": r[0], "price": r[1], "rsi": r[2],
@@ -213,12 +220,14 @@ class DataLogger:
         """Pre-crash scores over de afgelopen X uur."""
         try:
             conn = self._conn()
-            rows = conn.execute(
+            cur = conn.cursor()
+            cur.execute(adapt_query(
                 """SELECT ts, score FROM crash_score_log
                    WHERE symbol=? AND ts >= datetime('now', ?)
-                   ORDER BY ts DESC LIMIT 500""",
+                   ORDER BY ts DESC LIMIT 500"""),
                 (symbol, f"-{hours} hours"),
-            ).fetchall()
+            )
+            rows = cur.fetchall()
             conn.close()
             return [{"ts": r[0], "score": r[1]} for r in rows]
         except Exception:
@@ -228,22 +237,24 @@ class DataLogger:
         """Recente marktgebeurtenissen (voor AI context)."""
         try:
             conn = self._conn()
+            cur = conn.cursor()
             if event_type:
-                rows = conn.execute(
+                cur.execute(adapt_query(
                     """SELECT ts, event_type, symbol, severity, value, description
                        FROM market_events
                        WHERE event_type=? AND ts >= datetime('now', ?)
-                       ORDER BY ts DESC LIMIT 100""",
+                       ORDER BY ts DESC LIMIT 100"""),
                     (event_type, f"-{hours} hours"),
-                ).fetchall()
+                )
             else:
-                rows = conn.execute(
+                cur.execute(adapt_query(
                     """SELECT ts, event_type, symbol, severity, value, description
                        FROM market_events
                        WHERE ts >= datetime('now', ?)
-                       ORDER BY ts DESC LIMIT 100""",
+                       ORDER BY ts DESC LIMIT 100"""),
                     (f"-{hours} hours",),
-                ).fetchall()
+                )
+            rows = cur.fetchall()
             conn.close()
             return [
                 {"ts": r[0], "type": r[1], "symbol": r[2],
@@ -260,38 +271,42 @@ class DataLogger:
         """
         try:
             conn = self._conn()
+            cur = conn.cursor()
 
             # Gemiddelde prijs laatste 24u
-            row = conn.execute(
+            cur.execute(adapt_query(
                 """SELECT AVG(price), MIN(price), MAX(price), COUNT(*)
                    FROM price_snapshots WHERE symbol=?
-                   AND ts >= datetime('now', '-24 hours')""",
+                   AND ts >= datetime('now', '-24 hours')"""),
                 (symbol,)
-            ).fetchone()
+            )
+            row = cur.fetchone()
             price_24h = {
                 "avg": round(row[0] or 0, 6), "min": round(row[1] or 0, 6),
                 "max": round(row[2] or 0, 6), "snapshots": row[3]
             } if row and row[0] else {}
 
             # Max crash score laatste 24u
-            row2 = conn.execute(
+            cur.execute(adapt_query(
                 """SELECT MAX(score), AVG(score) FROM crash_score_log
-                   WHERE symbol=? AND ts >= datetime('now', '-24 hours')""",
+                   WHERE symbol=? AND ts >= datetime('now', '-24 hours')"""),
                 (symbol,)
-            ).fetchone()
+            )
+            row2 = cur.fetchone()
             crash_24h = {
                 "max_score": round(row2[0] or 0, 1),
                 "avg_score": round(row2[1] or 0, 1)
             } if row2 and row2[0] else {}
 
             # Recente events voor dit symbol
-            events = conn.execute(
+            cur.execute(adapt_query(
                 """SELECT event_type, severity, description, ts
                    FROM market_events WHERE symbol=? OR symbol IS NULL
                    AND ts >= datetime('now', '-48 hours')
-                   ORDER BY ts DESC LIMIT 10""",
+                   ORDER BY ts DESC LIMIT 10"""),
                 (symbol,)
-            ).fetchall()
+            )
+            events = cur.fetchall()
 
             conn.close()
             return {

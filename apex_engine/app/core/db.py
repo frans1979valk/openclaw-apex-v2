@@ -1,20 +1,21 @@
-import os, sqlite3, json
+import os, json
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
+from db_compat import get_conn, adapt_query
 
 def init_db(path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS events(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS events(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         source TEXT NOT NULL,
         level TEXT NOT NULL,
         title TEXT NOT NULL,
         payload_json TEXT
-    )""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS orders(
+    )"""))
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS orders(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         executor TEXT NOT NULL,
@@ -23,9 +24,9 @@ def init_db(path: str) -> None:
         size TEXT NOT NULL,
         price REAL,
         raw_json TEXT
-    )""")
+    )"""))
     # Signaal performance tabel — bijhoudt wat elk signaal opgeleverd had
-    cur.execute("""CREATE TABLE IF NOT EXISTS signal_performance(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS signal_performance(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -39,9 +40,9 @@ def init_db(path: str) -> None:
         pnl_1h_pct  REAL,
         pnl_4h_pct  REAL,
         status TEXT DEFAULT 'open'
-    )""")
+    )"""))
     # Market context memory — opslaan van multi-TF context per signaal
-    cur.execute("""CREATE TABLE IF NOT EXISTS market_context(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS market_context(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -55,9 +56,9 @@ def init_db(path: str) -> None:
         outcome_1h_pct REAL,
         outcome_4h_pct REAL,
         status TEXT DEFAULT 'open'
-    )""")
+    )"""))
     # Demo account tracking — virtuele $1000 rekening
-    cur.execute("""CREATE TABLE IF NOT EXISTS demo_account(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS demo_account(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -68,21 +69,21 @@ def init_db(path: str) -> None:
         balance_after REAL NOT NULL,
         signal TEXT,
         note TEXT
-    )""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS demo_balance(
+    )"""))
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS demo_balance(
         id INTEGER PRIMARY KEY CHECK (id = 1),
         balance REAL NOT NULL DEFAULT 1000.0,
         peak_balance REAL NOT NULL DEFAULT 1000.0,
         total_trades INTEGER DEFAULT 0,
         winning_trades INTEGER DEFAULT 0,
         total_volume_usdt REAL DEFAULT 0
-    )""")
+    )"""))
     # Zorg dat er altijd 1 record is
-    cur.execute("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
+    cur.execute(adapt_query("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)"))
 
     # ── Historische data voor AI-geheugen ─────────────────────────────────
     # Prijs snapshots: elke 5 min per coin opgeslagen
-    cur.execute("""CREATE TABLE IF NOT EXISTS price_snapshots(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS price_snapshots(
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
         ts      TEXT NOT NULL,
         symbol  TEXT NOT NULL,
@@ -93,11 +94,11 @@ def init_db(path: str) -> None:
         change_pct REAL,
         atr     REAL,
         tf_bias TEXT
-    )""")
+    )"""))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ps_sym_ts ON price_snapshots(symbol, ts)")
 
     # Pre-crash score geschiedenis: wanneer was het gevaarlijk?
-    cur.execute("""CREATE TABLE IF NOT EXISTS crash_score_log(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS crash_score_log(
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
         ts      TEXT NOT NULL,
         symbol  TEXT NOT NULL,
@@ -106,11 +107,11 @@ def init_db(path: str) -> None:
         vol_pct REAL,
         rsi_pct REAL,
         mom_pct REAL
-    )""")
+    )"""))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_csl_sym_ts ON crash_score_log(symbol, ts)")
 
     # Exchange consensus geschiedenis: prijsvergelijking over tijd
-    cur.execute("""CREATE TABLE IF NOT EXISTS exchange_consensus_log(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS exchange_consensus_log(
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         ts              TEXT NOT NULL,
         symbol          TEXT NOT NULL,
@@ -123,11 +124,11 @@ def init_db(path: str) -> None:
         blofin_price    REAL,
         divergence_pct  REAL,
         coinbase_lead   INTEGER DEFAULT 0
-    )""")
+    )"""))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ecl_sym_ts ON exchange_consensus_log(symbol, ts)")
 
     # Marktgebeurtenissen: BTC cascades, flash crashes, news alerts
-    cur.execute("""CREATE TABLE IF NOT EXISTS market_events(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS market_events(
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         ts          TEXT NOT NULL,
         event_type  TEXT NOT NULL,
@@ -136,29 +137,29 @@ def init_db(path: str) -> None:
         value       REAL,
         description TEXT,
         payload_json TEXT
-    )""")
+    )"""))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_me_ts ON market_events(ts)")
 
     conn.commit()
     conn.close()
 
 def log_event(db_path: str, source: str, level: str, title: str, payload: Dict[str, Any] | None = None) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
     cur = conn.cursor()
     ts = datetime.now(timezone.utc).isoformat()
     cur.execute(
-        "INSERT INTO events(ts, source, level, title, payload_json) VALUES (?, ?, ?, ?, ?)",
+        adapt_query("INSERT INTO events(ts, source, level, title, payload_json) VALUES (?, ?, ?, ?, ?)"),
         (ts, source, level, title, json.dumps(payload or {}, ensure_ascii=False))
     )
     conn.commit()
     conn.close()
 
 def log_order(db_path: str, executor: str, symbol: str, side: str, size: str, price: float | None, raw: Any) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
     cur = conn.cursor()
     ts = datetime.now(timezone.utc).isoformat()
     cur.execute(
-        "INSERT INTO orders(ts, executor, symbol, side, size, price, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        adapt_query("INSERT INTO orders(ts, executor, symbol, side, size, price, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)"),
         (ts, executor, symbol, side, size, price, json.dumps(raw, ensure_ascii=False))
     )
     conn.commit()
@@ -167,12 +168,13 @@ def log_order(db_path: str, executor: str, symbol: str, side: str, size: str, pr
 def log_signal_entry(db_path: str, symbol: str, signal: str,
                      entry_price: float, active_signals: List[str]) -> None:
     """Sla een nieuw signaal op voor latere performance evaluatie."""
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
+    cur = conn.cursor()
     ts = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO signal_performance
+    cur.execute(
+        adapt_query("""INSERT INTO signal_performance
            (ts, symbol, signal, active_signals, entry_price, status)
-           VALUES (?, ?, ?, ?, ?, 'open')""",
+           VALUES (?, ?, ?, ?, ?, 'open')"""),
         (ts, symbol, signal, json.dumps(active_signals), entry_price)
     )
     conn.commit()
@@ -186,18 +188,18 @@ def evaluate_open_signals(db_path: str, symbol: str, current_price: float) -> No
     if not current_price:
         return
     now = datetime.now(timezone.utc)
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, ts, entry_price, price_15m, price_1h, price_4h FROM signal_performance "
-        "WHERE symbol=? AND status='open'",
+        adapt_query("SELECT id, ts, entry_price, price_15m, price_1h, price_4h FROM signal_performance "
+        "WHERE symbol=? AND status='open'"),
         (symbol,)
     )
     rows = cur.fetchall()
     for row in rows:
-        sid, ts_str, entry, p15, p1h, p4h = row
+        sid, ts_str, entry, p15, p1h, p4h = row[0], row[1], row[2], row[3], row[4], row[5]
         try:
-            ts_entry = datetime.fromisoformat(ts_str)
+            ts_entry = ts_str if isinstance(ts_str, datetime) else datetime.fromisoformat(str(ts_str))
         except Exception:
             continue
         age = now - ts_entry
@@ -219,8 +221,8 @@ def evaluate_open_signals(db_path: str, symbol: str, current_price: float) -> No
 
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)
-            conn.execute(
-                f"UPDATE signal_performance SET {set_clause} WHERE id=?",
+            cur.execute(
+                adapt_query(f"UPDATE signal_performance SET {set_clause} WHERE id=?"),
                 (*updates.values(), sid)
             )
     conn.commit()
@@ -230,15 +232,16 @@ def log_market_context(db_path: str, symbol: str, signal: str, entry_price: floa
                        rsi_5m: float = None, tf_confirm_score: int = None,
                        tf_bias: str = None, tf_detail: dict = None) -> None:
     """Sla market context op voor het learning geheugen."""
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
+    cur = conn.cursor()
     ts = datetime.now(timezone.utc).isoformat()
     tf = tf_detail or {}
     rsi_1h = tf.get("1h", {}).get("rsi")
     rsi_4h = tf.get("4h", {}).get("rsi")
-    conn.execute(
-        """INSERT INTO market_context
+    cur.execute(
+        adapt_query("""INSERT INTO market_context
            (ts, symbol, signal, entry_price, rsi_5m, tf_confirm_score, tf_bias, tf_1h_rsi, tf_4h_rsi)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""),
         (ts, symbol, signal, entry_price, rsi_5m, tf_confirm_score, tf_bias, rsi_1h, rsi_4h)
     )
     conn.commit()
@@ -250,7 +253,7 @@ DEMO_MAX_TRADE_USDT = 50.0
 
 def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> None:
     """Registreer een virtuele koop in de demo rekening."""
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT balance FROM demo_balance WHERE id=1")
     row = cur.fetchone()
@@ -263,14 +266,14 @@ def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> No
         conn.close()
         return
     ts = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
+    cur.execute(
+        adapt_query("""INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
            virtual_pnl_usdt, balance_after, signal, note)
-           VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?)""",
+           VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?)"""),
         (ts, symbol, price, size_usdt, balance, signal, f"Auto-buy op {signal}")
     )
-    conn.execute(
-        "UPDATE demo_balance SET total_trades=total_trades+1, total_volume_usdt=total_volume_usdt+? WHERE id=1",
+    cur.execute(
+        adapt_query("UPDATE demo_balance SET total_trades=total_trades+1, total_volume_usdt=total_volume_usdt+? WHERE id=1"),
         (size_usdt,)
     )
     conn.commit()
@@ -279,56 +282,72 @@ def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> No
 
 def demo_evaluate_trades(db_path: str, symbol: str, current_price: float) -> None:
     """Evalueer open demo trades en bereken P&L."""
-    conn = sqlite3.connect(db_path)
+    conn = get_conn()
     cur = conn.cursor()
     now = datetime.now(timezone.utc)
     cur.execute(
-        "SELECT id, ts, price, virtual_size_usdt FROM demo_account "
-        "WHERE symbol=? AND action='buy' AND virtual_pnl_usdt=0",
+        adapt_query("SELECT id, ts, price, virtual_size_usdt FROM demo_account "
+        "WHERE symbol=? AND action='buy' AND virtual_pnl_usdt=0"),
         (symbol,)
     )
     rows = cur.fetchall()
     for row in rows:
-        tid, ts_str, buy_price, size_usdt = row
+        tid, ts_str, buy_price, size_usdt = row[0], row[1], row[2], row[3]
         try:
-            age = now - datetime.fromisoformat(ts_str)
+            age = now - (ts_str if isinstance(ts_str, datetime) else datetime.fromisoformat(str(ts_str)))
         except Exception:
             continue
         # Sluit positie na 1 uur (simulatie)
         if age.total_seconds() >= 3600 and buy_price and current_price:
             pnl_pct = (current_price / buy_price - 1)
             pnl_usdt = round(size_usdt * pnl_pct, 4)
-            conn.execute(
-                "UPDATE demo_account SET virtual_pnl_usdt=? WHERE id=?",
+            cur.execute(
+                adapt_query("UPDATE demo_account SET virtual_pnl_usdt=? WHERE id=?"),
                 (pnl_usdt, tid)
             )
             # Update balans en stats
             if pnl_usdt > 0:
-                conn.execute(
-                    "UPDATE demo_balance SET balance=balance+?, peak_balance=MAX(peak_balance, balance+?), "
-                    "winning_trades=winning_trades+1 WHERE id=1",
+                cur.execute(
+                    adapt_query("UPDATE demo_balance SET balance=balance+?, peak_balance=MAX(peak_balance, balance+?), "
+                    "winning_trades=winning_trades+1 WHERE id=1"),
                     (pnl_usdt, pnl_usdt)
                 )
             else:
-                conn.execute(
-                    "UPDATE demo_balance SET balance=balance+? WHERE id=1",
+                cur.execute(
+                    adapt_query("UPDATE demo_balance SET balance=balance+? WHERE id=1"),
                     (pnl_usdt,)
                 )
     conn.commit()
     conn.close()
 
 
+def count_open_demo_positions() -> int:
+    """Tel het aantal open demo posities (gekocht maar nog niet gesloten)."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(adapt_query(
+            "SELECT COUNT(*) FROM demo_account WHERE action='buy' AND virtual_pnl_usdt=0"
+        ))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception as e:
+        print(f"[db] count_open_demo_positions fout: {e}")
+        return 0
+
+
 def get_demo_stats(db_path: str) -> dict:
     """Haal demo account statistieken op."""
     try:
-        conn = sqlite3.connect(db_path)
+        conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT balance, peak_balance, total_trades, winning_trades, total_volume_usdt FROM demo_balance WHERE id=1")
         row = cur.fetchone()
         if not row:
             conn.close()
             return {}
-        balance, peak, total, wins, vol = row
+        balance, peak, total, wins, vol = row[0], row[1], row[2], row[3], row[4]
 
         # Recente trades
         cur.execute("""
@@ -371,11 +390,11 @@ def get_backtest_summaries(db_path: str, symbols: List[str]) -> dict:
     if not symbols:
         return {}
     try:
-        conn = sqlite3.connect(db_path)
+        conn = get_conn()
         cur = conn.cursor()
         result = {}
         for sym in symbols:
-            cur.execute("""
+            cur.execute(adapt_query("""
                 SELECT signal, COUNT(*) as cnt,
                        AVG(pnl_1h_pct) as avg1h, AVG(pnl_4h_pct) as avg4h,
                        AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100 as win1h,
@@ -384,7 +403,7 @@ def get_backtest_summaries(db_path: str, symbols: List[str]) -> dict:
                 WHERE symbol=?
                 GROUP BY signal
                 ORDER BY cnt DESC
-            """, (sym,))
+            """), (sym,))
             rows = cur.fetchall()
             if rows:
                 months = rows[0][7] if rows[0][7] is not None else "?"

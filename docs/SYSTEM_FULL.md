@@ -1,6 +1,6 @@
 # SYSTEM_FULL.md — Volledige Systeemdocumentatie Apex Trading Platform
 
-Versie: 2026-03-05 | Modus: demo | Platform: Docker Compose op VPS
+Versie: 2026-03-06 | Modus: demo | Platform: Docker Compose op VPS
 
 ---
 
@@ -19,6 +19,9 @@ Versie: 2026-03-05 | Modus: demo | Platform: Docker Compose op VPS
 | `openclaw` | — (intern) | agent_net | Legacy Python agent (learn + backtest loop) |
 | `tg_coordinator_bot` | — (intern) | agent_net | Telegram: automatische 5-min marktrapporten |
 | `tg_discuss_bot` | — (intern) | agent_net | Telegram: interactieve bot met trading controls |
+| `jojo_analytics` | 127.0.0.1:8097 | agent_net | TA indicators + DB query service voor Jojo1 |
+| `kimi_pattern_agent` | 127.0.0.1:8098 | agent_net | Nachtelijke patroonanalyse via Kimi AI |
+| `indicator_engine` | 127.0.0.1:8099 | trade_net | Historische OHLCV import + pattern matching + signalen |
 
 ### 1.2 Communicatie tussen services
 

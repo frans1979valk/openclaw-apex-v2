@@ -1,16 +1,16 @@
 """Jojo Analytics — lichte Python analytics service voor Jojo1."""
-import os, json, sqlite3
+import os, json
 import numpy as np
 import requests as req
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from db_compat import get_conn, dict_cursor, adapt_query, is_pg
 
 app = FastAPI(title="Jojo Analytics")
 
 BINANCE_BASE = os.getenv("BINANCE_BASE", "https://api.binance.com")
 ORACLE_URL = os.getenv("ORACLE_URL", "http://market_oracle_sandbox:8095")
-DB_PATH = "/var/apex/apex.db"
 MAX_ROWS = 200
 
 
@@ -285,9 +285,8 @@ def db_query(body: QueryRequest):
             raise HTTPException(status_code=400, detail=f"Verboden keyword: {kw}")
 
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn = get_conn()
+        cur = dict_cursor(conn)
         cur.execute(stripped)
         rows = cur.fetchmany(MAX_ROWS)
         columns = [desc[0] for desc in cur.description] if cur.description else []

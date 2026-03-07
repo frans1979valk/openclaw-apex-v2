@@ -2,18 +2,35 @@ import os, time, requests, json
 from openai import OpenAI
 from telegram.common import get_updates, send_message, api_headers
 
-CONTROL_API_URL = os.getenv("CONTROL_API_URL", "http://control_api:8080")
+CONTROL_API_URL      = os.getenv("CONTROL_API_URL", "http://control_api:8080")
+INDICATOR_ENGINE_URL = os.getenv("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
 ALLOWED = set([x.strip() for x in os.getenv("TELEGRAM_ALLOWED_USERS","").split(",") if x.strip()])
 KIMI_API_KEY  = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://integrate.api.nvidia.com/v1")
 KIMI_MODEL    = os.getenv("KIMI_MODEL", "moonshotai/kimi-k2.5")
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
 def get_state():
     r = requests.get(f"{CONTROL_API_URL}/state/latest", headers=api_headers(), timeout=5)
     return r.json() if r.status_code == 200 else {}
 
+def get_indicator_signal(symbol: str, interval: str = "1h") -> dict:
+    try:
+        r = requests.get(f"{INDICATOR_ENGINE_URL}/signal/{symbol}",
+                         params={"interval": interval}, timeout=8)
+        return r.json() if r.status_code == 200 else {}
+    except Exception:
+        return {}
+
+def get_patterns(symbol: str) -> list:
+    try:
+        r = requests.get(f"{INDICATOR_ENGINE_URL}/patterns/{symbol}", timeout=8)
+        return r.json() if r.status_code == 200 else []
+    except Exception:
+        return []
+
 def web_search(query: str) -> str:
-    """Zoek actuele info via DuckDuckGo Instant Answer API."""
     try:
         r = requests.get(
             "https://api.duckduckgo.com/",
@@ -25,7 +42,6 @@ def web_search(query: str) -> str:
         answer   = d.get("Answer", "")
         result   = answer or abstract
         if not result:
-            # Fallback: gebruik RelatedTopics
             topics = d.get("RelatedTopics", [])[:3]
             result = " | ".join(t.get("Text", "") for t in topics if t.get("Text"))
         return result[:500] if result else "Geen zoekresultaten gevonden."
@@ -34,7 +50,7 @@ def web_search(query: str) -> str:
 
 def ask_kimi(question: str, context: str = "") -> str:
     if not KIMI_API_KEY:
-        return "⚠️ Kimi niet geconfigureerd (KIMI_API_KEY ontbreekt)."
+        return "Kimi niet geconfigureerd (KIMI_API_KEY ontbreekt)."
     try:
         client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL)
         system = (
@@ -44,26 +60,21 @@ def ask_kimi(question: str, context: str = "") -> str:
             "JOUW ROL EN BEVOEGDHEDEN:\n"
             "- Je analyseert de markt en geeft concrete handelingsadviezen\n"
             "- Je MAG en MOET acties aanbevelen op basis van marktdata\n"
+            "- Je hebt toegang tot 4 jaar historische patronen per coin (35.000+ candles)\n"
             "- De apex_engine voert automatisch trades uit op BloFin (demo modus)\n"
             "- De eigenaar kan via jou de engine sturen met commando's\n\n"
-            "BESCHIKBARE COMMANDO'S die de eigenaar kan gebruiken:\n"
-            "- /stop — NOODSTOP, alle trading stopt onmiddellijk\n"
-            "- /start — hervat trading na stop of pauze\n"
-            "- /pauzeer [minuten] — pauzeer trading tijdelijk\n"
-            "- /status — bekijk alle actieve coins en signalen\n"
-            "- /coins — bekijk Kimi's coin selectie\n"
-            "- /balance — bekijk account balans en P&L\n"
-            "- /backtest [SYMBOL] — backtest een strategie\n"
-            "- /ok <id> — keur een wachtend voorstel goed\n"
-            "- /skip <id> — sla een voorstel over\n\n"
-            "Als je een BUY/SELL kans ziet, zeg dat dan DIRECT en verwijs naar /status voor actuele info. "
-            "Zeg NOOIT dat je geen handelingen kunt uitvoeren — de engine doet dit automatisch, "
-            "en jij kunt de eigenaar adviseren om commando's te geven. "
-            "Gebruik de marktcontext als die beschikbaar is."
+            "BESCHIKBARE COMMANDO'S:\n"
+            "- /stop /start /pauzeer [min] — trading beheer\n"
+            "- /status /coins /balance /perf — overzichten\n"
+            "- /patroon SYMBOL — historische patroondata\n"
+            "- /signal SYMBOL — indicator signaal met 4 jaar precedenten\n"
+            "- /backtest SYMBOL — strategie backtest\n\n"
+            "Gebruik de marktcontext en historische data die je krijgt. "
+            "Als je een BUY/SELL kans ziet op basis van patronen, zeg dat DIRECT."
         )
         user_msg = question
         if context:
-            user_msg = f"Marktcontext:\n{context}\n\nVraag: {question}"
+            user_msg = f"Marktcontext + historische data:\n{context}\n\nVraag: {question}"
         resp = client.chat.completions.create(
             model=KIMI_MODEL,
             messages=[
@@ -75,7 +86,7 @@ def ask_kimi(question: str, context: str = "") -> str:
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"⚠️ Kimi fout: {e}"
+        return f"Kimi fout: {e}"
 
 def build_context(state: dict) -> str:
     coins = state.get("coins", [])
@@ -89,13 +100,15 @@ def build_context(state: dict) -> str:
         )
     return "\n".join(lines)
 
+# ── Commands ─────────────────────────────────────────────────────────────────
+
 def cmd_status(chat_id):
     state = get_state()
     coins = state.get("coins", [])
     ts    = (state.get("ts") or "?")[:19].replace("T", " ")
     kimi  = (state.get("kimi_last_scan") or "nog niet")[:19].replace("T", " ")
     flash = state.get("flash_triggers", [])
-    lines = [f"📈 *Status — {ts} UTC*", f"🤖 Kimi scan: {kimi}", ""]
+    lines = [f"Status {ts} UTC", f"Kimi scan: {kimi}", ""]
     for c in coins:
         sym    = c.get("symbol","?")
         price  = c.get("price", 0)
@@ -103,23 +116,20 @@ def cmd_status(chat_id):
         rsi    = c.get("rsi")
         signal = c.get("signal", "HOLD")
         tf_b   = c.get("tf_bias", "")
-        arrow  = "🟢" if chg >= 0 else "🔴"
-        sig    = {"BUY":"🟢BUY","SELL":"🔴SELL","HOLD":"⚪HOLD",
-                  "PERFECT_DAY":"⭐PERFECT DAY","BREAKOUT_BULL":"🚀BREAKOUT",
-                  "MOMENTUM":"📈MOMENTUM","DANGER":"⚠️DANGER"}.get(signal,"⚪")
-        rsi_s  = f"RSI:{rsi:.0f}" if rsi else "RSI:—"
-        tf_s   = f" | TF:{tf_b}" if tf_b else ""
-        lines.append(f"{arrow} *{sym}*: ${price:.4f} ({chg:+.2f}%) {sig} {rsi_s}{tf_s}")
+        arrow  = "+" if chg >= 0 else "-"
+        rsi_s  = f"RSI:{rsi:.0f}" if rsi else "RSI:?"
+        tf_s   = f" TF:{tf_b}" if tf_b else ""
+        lines.append(f"{arrow} {sym}: ${price:.4f} ({chg:+.2f}%) {signal} {rsi_s}{tf_s}")
     if flash:
-        lines.append(f"\n⚡ Flash crashes (1u): {len(flash)}")
+        lines.append(f"\nFlash crashes (1u): {len(flash)}")
     send_message(chat_id, "\n".join(lines))
 
 def cmd_coins(chat_id):
     coins = get_state().get("coins", [])
     if not coins:
-        send_message(chat_id, "⏳ Kimi heeft nog geen coins geselecteerd.")
+        send_message(chat_id, "Kimi heeft nog geen coins geselecteerd.")
         return
-    lines = ["🎯 *Kimi's selectie:*", ""]
+    lines = ["Kimi's selectie:", ""]
     for i, c in enumerate(coins, 1):
         sym   = c.get("symbol","?")
         price = c.get("price", 0)
@@ -128,16 +138,10 @@ def cmd_coins(chat_id):
         reden = c.get("kimi_reden", "—")
         rsi   = c.get("rsi")
         signal= c.get("signal", "HOLD")
-        tf_c  = c.get("tf_confirm")
-        arrow = "🟢" if chg >= 0 else "🔴"
-        sig   = {"BUY":"🟢BUY","SELL":"🔴SELL","HOLD":"⚪HOLD",
-                 "PERFECT_DAY":"⭐PERFECT DAY","BREAKOUT_BULL":"🚀BREAKOUT",
-                 "MOMENTUM":"📈MOMENTUM","DANGER":"⚠️DANGER"}.get(signal,"⚪")
-        lines.append(f"{i}. {arrow} *{sym}* ${price:.4f} ({chg:+.2f}%) Vol:{vol:.1f}M")
-        rsi_str = f"{rsi:.0f}" if rsi else "—"
-        tf_str  = f" | TF:{tf_c}%" if tf_c is not None else ""
-        lines.append(f"   {sig}  RSI:{rsi_str}{tf_str}")
-        lines.append(f"   💡 {reden}")
+        arrow = "+" if chg >= 0 else "-"
+        rsi_str = f"{rsi:.0f}" if rsi else "?"
+        lines.append(f"{i}. {arrow} {sym} ${price:.4f} ({chg:+.2f}%) {signal} RSI:{rsi_str}")
+        lines.append(f"   {reden}")
         lines.append("")
     send_message(chat_id, "\n".join(lines))
 
@@ -151,17 +155,16 @@ def cmd_balance(chat_id):
         wr      = d.get("win_rate_pct", 0)
         trades  = d.get("total_orders", 0)
         sign    = "+" if pnl >= 0 else ""
-        arrow   = "📈" if pnl >= 0 else "📉"
         send_message(chat_id,
-            f"💰 *Demo Account — BloFin Paper*\n\n"
-            f"Start:   $1.000\n"
-            f"Balans:  ${bal:,.2f}\n"
-            f"{arrow} P&L:    {sign}${pnl:.2f} ({sign}{pnl_pct:.2f}%)\n"
+            f"Demo Account BloFin\n\n"
+            f"Start:    $1.000\n"
+            f"Balans:   ${bal:,.2f}\n"
+            f"P&L:      {sign}${pnl:.2f} ({sign}{pnl_pct:.2f}%)\n"
             f"Win-rate: {wr}%\n"
             f"Trades:   {trades}"
         )
     except Exception as e:
-        send_message(chat_id, f"❌ Balance fout: {e}")
+        send_message(chat_id, f"Balance fout: {e}")
 
 def cmd_perf(chat_id):
     try:
@@ -170,22 +173,90 @@ def cmd_perf(chat_id):
         rows = r.json()
         closed = [x for x in rows if x.get("pnl_1h_pct") is not None]
         if not closed:
-            send_message(chat_id, "⏳ Nog geen afgeronde signalen.")
+            send_message(chat_id, "Nog geen afgeronde signalen.")
             return
         wins = [x for x in closed if x["pnl_1h_pct"] > 0]
         wr   = round(len(wins) / len(closed) * 100)
         avg  = round(sum(x["pnl_1h_pct"] for x in closed) / len(closed), 2)
-        lines = [f"📊 *Signal Performance* (laatste {len(closed)})\n",
-                 f"Win-rate: {wr}%  |  Gem. P&L (1u): {avg:+.2f}%\n"]
+        lines = [f"Signal Performance (laatste {len(closed)})\n",
+                 f"Win-rate: {wr}%  Gem. P&L (1u): {avg:+.2f}%\n"]
         for x in closed[:8]:
             sym = x.get("symbol","?")
             sig = x.get("signal","?")
             p   = x.get("pnl_1h_pct", 0)
-            icon = "✅" if p > 0 else "❌"
+            icon = "+" if p > 0 else "-"
             lines.append(f"{icon} {sym} {sig}: {p:+.2f}%")
         send_message(chat_id, "\n".join(lines))
     except Exception as e:
-        send_message(chat_id, f"❌ Perf fout: {e}")
+        send_message(chat_id, f"Perf fout: {e}")
+
+def cmd_patroon(chat_id, args: str):
+    """Historische patroondata voor een coin: /patroon BTC"""
+    parts  = args.strip().split()
+    symbol = (parts[0].upper() if parts else "BTC")
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+    send_message(chat_id, f"Patroondata ophalen voor {symbol}...")
+    patterns = get_patterns(symbol)
+    if not patterns:
+        send_message(chat_id, f"Geen patroondata voor {symbol}. Is de indicator engine klaar?")
+        return
+    sorted_p = sorted(patterns, key=lambda x: x.get("win_rate", 0), reverse=True)
+    top    = sorted_p[:3]
+    bottom = sorted_p[-2:] if len(sorted_p) > 3 else []
+    lines = [f"Historische patronen {symbol} ({len(patterns)} combinaties)\n"]
+    lines.append("BESTE patronen:")
+    for p in top:
+        rz  = p.get("rsi_zone", "?")
+        md  = p.get("macd_direction", "?")
+        wr  = p.get("win_rate", 0)
+        n   = p.get("n_trades", 0)
+        avg = p.get("avg_pnl_1h", 0)
+        lines.append(f"  RSI:{rz} MACD:{md} -> {wr:.0f}% win ({n} trades, avg {avg:+.2f}%)")
+    if bottom:
+        lines.append("\nSLECHTE patronen:")
+        for p in bottom:
+            rz  = p.get("rsi_zone", "?")
+            md  = p.get("macd_direction", "?")
+            wr  = p.get("win_rate", 0)
+            n   = p.get("n_trades", 0)
+            avg = p.get("avg_pnl_1h", 0)
+            lines.append(f"  RSI:{rz} MACD:{md} -> {wr:.0f}% win ({n} trades, avg {avg:+.2f}%)")
+    send_message(chat_id, "\n".join(lines))
+
+def cmd_signal(chat_id, args: str):
+    """Indicator signaal met historische precedenten: /signal BTC"""
+    parts    = args.strip().split()
+    symbol   = (parts[0].upper() if parts else "BTC")
+    interval = parts[1] if len(parts) > 1 else "1h"
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+    send_message(chat_id, f"Signaal ophalen voor {symbol} ({interval})...")
+    sig = get_indicator_signal(symbol, interval)
+    if not sig:
+        send_message(chat_id, f"Geen signaaldata voor {symbol}.")
+        return
+    fp = sig.get("fingerprint", {})
+    lines = [
+        f"Signaal {symbol} ({interval})",
+        f"",
+        f"Signaal:     {sig.get('signaal','?')}",
+        f"Confidence:  {sig.get('confidence',0):.0%}",
+        f"Precedenten: {sig.get('precedenten',0)} (4 jaar data)",
+        f"Win rate:    {sig.get('win_rate',0):.1f}%",
+        f"Avg PnL 1h:  {sig.get('avg_pnl_1h',0):+.3f}%",
+        f"Avg PnL 4h:  {sig.get('avg_pnl_4h',0):+.3f}%",
+        f"Worst 1h:    {sig.get('worst_case_1h',0):+.3f}%",
+        f"BTC trend:   {sig.get('btc_trend','?')}",
+        f"",
+        f"RSI zone:    {fp.get('rsi_zone','?')}",
+        f"MACD:        {fp.get('macd_direction','?')}",
+        f"BB positie:  {fp.get('bb_position','?')}",
+        f"EMA:         {fp.get('ema_alignment','?')}",
+        f"",
+        f"{sig.get('reden','?')}",
+    ]
+    send_message(chat_id, "\n".join(lines))
 
 def cmd_backtest(chat_id, args):
     parts  = args.strip().split()
@@ -193,339 +264,352 @@ def cmd_backtest(chat_id, args):
     if not symbol.endswith("USDT"):
         symbol += "USDT"
     interval = parts[1] if len(parts) > 1 else "4h"
-    send_message(chat_id, f"⏳ Backtest {symbol} ({interval})...")
+    send_message(chat_id, f"Backtest {symbol} ({interval})...")
     try:
-        r = requests.get(
-            f"{CONTROL_API_URL}/backtest/{symbol}",
-            headers=api_headers(),
-            params={"interval": interval, "limit": 500},
-            timeout=30
-        )
+        r = requests.get(f"{CONTROL_API_URL}/backtest/{symbol}",
+                         headers=api_headers(),
+                         params={"interval": interval, "limit": 500}, timeout=30)
         d = r.json()
         if d.get("trades", 0) == 0:
-            send_message(chat_id, f"📊 {symbol}: geen trades gevonden in {interval} data.")
+            send_message(chat_id, f"{symbol}: geen trades in {interval} data.")
             return
-        pf_ok = "✅" if d.get("profit_factor", 0) > 1.0 else "❌"
+        pf_ok = "OK" if d.get("profit_factor", 0) > 1.0 else "SLECHT"
         send_message(chat_id,
-            f"📊 *Backtest {symbol} ({interval})*\n"
+            f"Backtest {symbol} ({interval})\n"
             f"Trades: {d['trades']}  Win: {d['win_rate']}%\n"
             f"Profit factor: {d['profit_factor']} {pf_ok}\n"
             f"Max drawdown: {d['max_drawdown_pct']}%\n"
-            f"Sharpe: {d['sharpe']}\n"
             f"Totaal rendement: {d['total_return_pct']}%"
         )
     except Exception as e:
-        send_message(chat_id, f"❌ Backtest fout: {e}")
+        send_message(chat_id, f"Backtest fout: {e}")
 
 def cmd_zoek(chat_id, query: str):
-    """Zoek actuele informatie op het web en beantwoord de vraag."""
     if not query.strip():
-        send_message(chat_id, "Gebruik: /zoek <zoekopdracht>  bijv. /zoek Bitcoin nieuws")
+        send_message(chat_id, "Gebruik: /zoek <zoekopdracht>")
         return
-    send_message(chat_id, f"🔍 Zoeken naar: {query}...")
+    send_message(chat_id, f"Zoeken naar: {query}...")
     web_result = web_search(query)
     if KIMI_API_KEY:
-        antwoord = ask_kimi(
-            f"Beantwoord de volgende zoekopdracht op basis van de zoekresultaten:\n"
-            f"Zoekopdracht: {query}\n"
-            f"Resultaten: {web_result}",
-        )
+        antwoord = ask_kimi(f"Zoekopdracht: {query}\nResultaten: {web_result}")
     else:
         antwoord = web_result
-    send_message(chat_id, f"🔍 *{query}*\n\n{antwoord}")
+    send_message(chat_id, f"{query}\n\n{antwoord}")
 
 def cmd_clawbot(chat_id, args: str):
-    """
-    /clawbot          — toon huidige model instelling
-    /clawbot sonnet   — upgrade naar Claude Sonnet 4.6 (premium)
-    /clawbot haiku    — terug naar Claude Haiku (standaard/goedkoop)
-    """
     arg = args.strip().lower()
-
     if not arg:
-        # Toon huidige status
         try:
             r = requests.get(f"{CONTROL_API_URL}/clawbot/model", headers=api_headers(), timeout=5)
             d = r.json()
             model   = d.get("model", "?")
             premium = d.get("is_premium", False)
-            icon    = "💎" if premium else "✅"
             send_message(chat_id,
-                f"🤖 *ClawBot Model Status*\n\n"
-                f"{icon} Huidig model: `{model}`\n\n"
-                f"{'⚠️ PREMIUM actief — tokens worden verbruikt!' if premium else '✅ Standaard Haiku — zuinig modus'}\n\n"
-                f"Commando's:\n"
-                f"/clawbot sonnet — upgrade naar Sonnet 4.6\n"
-                f"/clawbot haiku  — terug naar Haiku (standaard)"
+                f"ClawBot Model\n\nHuidig: {model}\n"
+                f"{'PREMIUM actief' if premium else 'Standaard Haiku'}\n\n"
+                f"/clawbot sonnet — Sonnet 4.6\n/clawbot haiku — Haiku"
             )
         except Exception as e:
-            send_message(chat_id, f"❌ ClawBot status fout: {e}")
-
+            send_message(chat_id, f"ClawBot status fout: {e}")
     elif arg == "sonnet":
         try:
-            r = requests.post(
-                f"{CONTROL_API_URL}/clawbot/model",
-                headers=api_headers(),
-                json={"model": "sonnet"},
-                timeout=5
-            )
-            if r.status_code == 200:
-                send_message(chat_id,
-                    "💎 *ClawBot → Sonnet 4.6 geactiveerd*\n\n"
-                    "Claude Sonnet 4.6 wordt nu gebruikt voor strategische beslissingen.\n"
-                    "⚠️ Dit verbruikt meer tokens.\n\n"
-                    "Gebruik /clawbot haiku om terug te schakelen."
-                )
-            else:
-                send_message(chat_id, f"❌ Fout: {r.text}")
+            r = requests.post(f"{CONTROL_API_URL}/clawbot/model", headers=api_headers(),
+                              json={"model": "sonnet"}, timeout=5)
+            send_message(chat_id, "ClawBot -> Sonnet 4.6 geactiveerd." if r.status_code == 200 else f"Fout: {r.text}")
         except Exception as e:
-            send_message(chat_id, f"❌ Fout: {e}")
-
+            send_message(chat_id, f"Fout: {e}")
     elif arg == "haiku":
         try:
-            r = requests.post(
-                f"{CONTROL_API_URL}/clawbot/model",
-                headers=api_headers(),
-                json={"model": "haiku"},
-                timeout=5
-            )
-            if r.status_code == 200:
-                send_message(chat_id,
-                    "✅ *ClawBot → Haiku (standaard) geactiveerd*\n\n"
-                    "Terug naar zuinige modus. Haiku handelt dagelijkse beslissingen af."
-                )
-            else:
-                send_message(chat_id, f"❌ Fout: {r.text}")
+            r = requests.post(f"{CONTROL_API_URL}/clawbot/model", headers=api_headers(),
+                              json={"model": "haiku"}, timeout=5)
+            send_message(chat_id, "ClawBot -> Haiku geactiveerd." if r.status_code == 200 else f"Fout: {r.text}")
         except Exception as e:
-            send_message(chat_id, f"❌ Fout: {e}")
-
+            send_message(chat_id, f"Fout: {e}")
     else:
-        send_message(chat_id,
-            "❓ Onbekend commando.\n\n"
-            "/clawbot          — toon status\n"
-            "/clawbot sonnet   — upgrade naar Sonnet 4.6\n"
-            "/clawbot haiku    — terug naar Haiku"
-        )
-
-
-def cmd_coingoedkeuren(chat_id, args: str):
-    """
-    /coingoedkeuren              — toon wachtende nieuwe coins
-    /coingoedkeuren ja SYMBOL    — keur coin goed voor trading
-    /coingoedkeuren nee SYMBOL   — wijs coin af
-    """
-    parts = args.strip().split()
-    if not parts:
-        # Toon wachtende coins
-        try:
-            r = requests.get(f"{CONTROL_API_URL}/coins/approved", headers=api_headers(), timeout=5)
-            d = r.json()
-            pending  = d.get("pending",  [])
-            approved = d.get("approved", [])
-            rejected = d.get("rejected", [])
-            lines = ["🪙 *Coin Goedkeuring Overzicht*\n"]
-            if pending:
-                lines.append(f"⏳ *Wachtend ({len(pending)}):*")
-                for s in pending:
-                    lines.append(f"  • {s}")
-                lines.append("\nGebruik /coingoedkeuren ja SYMBOL om goed te keuren.")
-            else:
-                lines.append("✅ Geen wachtende coins.")
-            if approved:
-                lines.append(f"\n🟢 *Goedgekeurd ({len(approved)}):*")
-                lines.append(", ".join(approved))
-            if rejected:
-                lines.append(f"\n🔴 *Afgewezen ({len(rejected)}):*")
-                lines.append(", ".join(rejected))
-            send_message(chat_id, "\n".join(lines))
-        except Exception as e:
-            send_message(chat_id, f"❌ Fout bij ophalen coins: {e}")
-        return
-
-    if len(parts) < 2:
-        send_message(chat_id, "Gebruik: /coingoedkeuren ja SYMBOL  of  /coingoedkeuren nee SYMBOL")
-        return
-
-    actie  = parts[0].lower()
-    symbol = parts[1].upper()
-    if not symbol.endswith("USDT"):
-        symbol += "USDT"
-
-    if actie in ("ja", "yes", "approve"):
-        action = "approve"
-        label  = "✅ GOEDGEKEURD"
-    elif actie in ("nee", "no", "reject", "afwijzen"):
-        action = "reject"
-        label  = "🔴 AFGEWEZEN"
-    else:
-        send_message(chat_id, "Gebruik 'ja' of 'nee': /coingoedkeuren ja BTCUSDT")
-        return
-
-    try:
-        r = requests.post(
-            f"{CONTROL_API_URL}/coins/approved",
-            headers=api_headers(),
-            json={"symbol": symbol, "action": action},
-            timeout=5
-        )
-        if r.status_code == 200:
-            send_message(chat_id,
-                f"🪙 *{symbol}* — {label}\n\n"
-                f"{'De coin wordt nu meegenomen in Kimis selectie.' if action == 'approve' else 'De coin wordt niet meer gesuggereerd.'}"
-            )
-        else:
-            send_message(chat_id, f"❌ Fout: {r.text}")
-    except Exception as e:
-        send_message(chat_id, f"❌ Fout: {e}")
-
+        send_message(chat_id, "/clawbot sonnet of /clawbot haiku")
 
 def cmd_noodstop(chat_id):
-    """NOODSTOP — staak alle trading onmiddellijk."""
     try:
         r = requests.post(f"{CONTROL_API_URL}/trading/halt", headers=api_headers(), timeout=5)
         if r.status_code == 200:
-            send_message(chat_id,
-                "🛑 *NOODSTOP ACTIEF*\n\n"
-                "Alle trading is onmiddellijk gestopt.\n"
-                "Gebruik /start om te hervatten."
-            )
+            send_message(chat_id, "NOODSTOP ACTIEF — alle trading gestopt. Gebruik /start om te hervatten.")
         else:
-            send_message(chat_id, f"❌ Noodstop mislukt: {r.text}")
+            send_message(chat_id, f"Noodstop mislukt: {r.text}")
     except Exception as e:
-        send_message(chat_id, f"❌ Noodstop fout: {e}")
-
+        send_message(chat_id, f"Noodstop fout: {e}")
 
 def cmd_start_trading(chat_id):
-    """Hervat trading na noodstop of pauze."""
     try:
         r = requests.post(f"{CONTROL_API_URL}/trading/resume", headers=api_headers(), timeout=5)
         if r.status_code == 200:
-            send_message(chat_id,
-                "✅ *Trading hervat*\n\n"
-                "OpenClaw is weer actief."
-            )
+            send_message(chat_id, "Trading hervat.")
         else:
-            send_message(chat_id, f"❌ Hervatten mislukt: {r.text}")
+            send_message(chat_id, f"Hervatten mislukt: {r.text}")
     except Exception as e:
-        send_message(chat_id, f"❌ Hervatten fout: {e}")
-
+        send_message(chat_id, f"Hervatten fout: {e}")
 
 def cmd_pauzeer(chat_id, args: str):
-    """Pauzeert trading voor X minuten: /pauzeer 30"""
     parts = args.strip().split()
     try:
         minutes = int(parts[0]) if parts else 30
     except ValueError:
         minutes = 30
     try:
-        r = requests.post(
-            f"{CONTROL_API_URL}/trading/pause",
-            headers=api_headers(),
-            json={"minutes": minutes, "reason": "handmatige pauze via Telegram"},
-            timeout=5
-        )
+        r = requests.post(f"{CONTROL_API_URL}/trading/pause", headers=api_headers(),
+                          json={"minutes": minutes, "reason": "handmatige pauze via Telegram"}, timeout=5)
         if r.status_code == 200:
             d = r.json()
             send_message(chat_id,
-                f"⏸️ *Trading gepauzeerd*\n\n"
-                f"Duur: {minutes} minuten\n"
-                f"Hervat om: `{d.get('paused_until','?')[:19].replace('T',' ')} UTC`\n\n"
-                "Gebruik /start om eerder te hervatten."
+                f"Trading gepauzeerd {minutes} min\n"
+                f"Hervat: {d.get('paused_until','?')[:19].replace('T',' ')} UTC"
             )
         else:
-            send_message(chat_id, f"❌ Pauze mislukt: {r.text}")
+            send_message(chat_id, f"Pauze mislukt: {r.text}")
     except Exception as e:
-        send_message(chat_id, f"❌ Pauze fout: {e}")
-
+        send_message(chat_id, f"Pauze fout: {e}")
 
 def cmd_ok(chat_id, text: str):
-    """Beantwoord een pending OpenClaw vraag met 'ok'."""
-    # Extract q_id uit tekst als aanwezig, anders gebruik laatste
-    q_id = None
-    parts = text.strip().split()
-    if len(parts) > 1:
-        q_id = parts[1]
-    if not q_id:
-        send_message(chat_id, "✅ OK ontvangen (geen vraag-id — gebruik /ok <q_id>)")
-        return
-    try:
-        requests.post(
-            f"{CONTROL_API_URL}/trading/answer",
-            headers=api_headers(),
-            json={"q_id": q_id, "antwoord": "ok"},
-            timeout=5
-        )
-        send_message(chat_id, f"✅ Antwoord 'ok' doorgegeven voor vraag `{q_id}`.")
-    except Exception as e:
-        send_message(chat_id, f"❌ Antwoord fout: {e}")
-
-
-def cmd_skip(chat_id, text: str):
-    """Beantwoord een pending OpenClaw vraag met 'skip'."""
     parts = text.strip().split()
     q_id = parts[1] if len(parts) > 1 else None
     if not q_id:
-        send_message(chat_id, "⏭️ Skip ontvangen (geen vraag-id — gebruik /skip <q_id>)")
+        send_message(chat_id, "Gebruik: /ok <q_id>")
         return
     try:
-        requests.post(
-            f"{CONTROL_API_URL}/trading/answer",
-            headers=api_headers(),
-            json={"q_id": q_id, "antwoord": "skip"},
-            timeout=5
-        )
-        send_message(chat_id, f"⏭️ Antwoord 'skip' doorgegeven voor vraag `{q_id}`.")
+        requests.post(f"{CONTROL_API_URL}/trading/answer", headers=api_headers(),
+                      json={"q_id": q_id, "antwoord": "ok"}, timeout=5)
+        send_message(chat_id, f"OK doorgegeven voor {q_id}.")
     except Exception as e:
-        send_message(chat_id, f"❌ Antwoord fout: {e}")
+        send_message(chat_id, f"Fout: {e}")
 
+def cmd_skip(chat_id, text: str):
+    parts = text.strip().split()
+    q_id = parts[1] if len(parts) > 1 else None
+    if not q_id:
+        send_message(chat_id, "Gebruik: /skip <q_id>")
+        return
+    try:
+        requests.post(f"{CONTROL_API_URL}/trading/answer", headers=api_headers(),
+                      json={"q_id": q_id, "antwoord": "skip"}, timeout=5)
+        send_message(chat_id, f"Skip doorgegeven voor {q_id}.")
+    except Exception as e:
+        send_message(chat_id, f"Fout: {e}")
 
 def cmd_tradingstatus(chat_id):
-    """Toon huidige trading halt/pauze status."""
     try:
         r = requests.get(f"{CONTROL_API_URL}/trading/status", headers=api_headers(), timeout=5)
         d = r.json()
         if d.get("halted"):
-            send_message(chat_id, "🛑 *Trading: GESTOPT (noodstop)*\nGebruik /start om te hervatten.")
+            send_message(chat_id, "Trading: GESTOPT\nGebruik /start om te hervatten.")
         elif d.get("paused_until"):
             until = d["paused_until"][:19].replace("T", " ")
-            send_message(chat_id, f"⏸️ *Trading: GEPAUZEERD*\nTot: `{until} UTC`\nGebruik /start om eerder te hervatten.")
+            send_message(chat_id, f"Trading: GEPAUZEERD tot {until} UTC")
         else:
-            send_message(chat_id, "✅ *Trading: ACTIEF*")
+            send_message(chat_id, "Trading: ACTIEF")
     except Exception as e:
-        send_message(chat_id, f"❌ Status fout: {e}")
+        send_message(chat_id, f"Status fout: {e}")
+
+def cmd_coingoedkeuren(chat_id, args: str):
+    parts = args.strip().split()
+    if not parts:
+        try:
+            r = requests.get(f"{CONTROL_API_URL}/coins/approved", headers=api_headers(), timeout=5)
+            d = r.json()
+            lines = ["Coin Goedkeuring\n"]
+            if d.get("pending"):
+                lines.append(f"Wachtend: {', '.join(d['pending'])}")
+            if d.get("approved"):
+                lines.append(f"Goedgekeurd: {', '.join(d['approved'])}")
+            if d.get("rejected"):
+                lines.append(f"Afgewezen: {', '.join(d['rejected'])}")
+            send_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            send_message(chat_id, f"Fout: {e}")
+        return
+    if len(parts) < 2:
+        send_message(chat_id, "Gebruik: /coingoedkeuren ja SYMBOL  of  /coingoedkeuren nee SYMBOL")
+        return
+    actie  = parts[0].lower()
+    symbol = parts[1].upper()
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+    if actie in ("ja", "yes"):
+        action = "approve"
+    elif actie in ("nee", "no"):
+        action = "reject"
+    else:
+        send_message(chat_id, "Gebruik 'ja' of 'nee'")
+        return
+    try:
+        r = requests.post(f"{CONTROL_API_URL}/coins/approved", headers=api_headers(),
+                          json={"symbol": symbol, "action": action}, timeout=5)
+        send_message(chat_id, f"{symbol}: {'GOEDGEKEURD' if action == 'approve' else 'AFGEWEZEN'}")
+    except Exception as e:
+        send_message(chat_id, f"Fout: {e}")
+
+def cmd_sniper(chat_id, args: str):
+    """Sniper bot beheer: /sniper dip BTC | /sniper short ETH rsi=68 | /sniper list | /sniper cancel <id>"""
+    parts = args.strip().split()
+    if not parts:
+        send_message(chat_id,
+            "Sniper Bot gebruik:\n"
+            "/sniper dip BTC [rsi=28] — wacht op dip entry\n"
+            "/sniper short ETH [rsi=68] — wacht op short entry\n"
+            "/sniper breakout SOL — wacht op breakout\n"
+            "/sniper niveau BTC target=80000 direction=dip\n"
+            "/sniper list — actieve snipers\n"
+            "/sniper cancel <id> — annuleer sniper\n"
+            "/sniper reverse BTC [threshold=-5] — crash analyse"
+        )
+        return
+
+    action = parts[0].lower()
+
+    if action == "list":
+        try:
+            r = requests.get(f"{INDICATOR_ENGINE_URL}/sniper/list", timeout=10)
+            snipers = r.json()
+            if not snipers:
+                send_message(chat_id, "Geen actieve snipers.")
+                return
+            lines = [f"Actieve snipers ({len(snipers)}):"]
+            for s in snipers:
+                rsi_now = f"RSI: {s['current_rsi']:.1f}" if s.get("current_rsi") else ""
+                thr = f"drempel {s['rsi_threshold']}" if s.get("rsi_threshold") else ""
+                target = f"target ${s['target_price']:,.2f}" if s.get("target_price") else ""
+                lines.append(
+                    f"• [{s['id']}] {s['symbol']} {s['mode'].upper()}"
+                    f" — {thr or target} | {rsi_now} | nog {s.get('remaining_hours',0):.1f}u"
+                )
+            send_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            send_message(chat_id, f"Fout: {e}")
+
+    elif action == "cancel":
+        if len(parts) < 2:
+            send_message(chat_id, "Gebruik: /sniper cancel <id>")
+            return
+        sid = parts[1]
+        try:
+            r = requests.delete(f"{INDICATOR_ENGINE_URL}/sniper/{sid}", timeout=10)
+            if r.status_code == 200:
+                send_message(chat_id, f"Sniper {sid} geannuleerd.")
+            else:
+                send_message(chat_id, f"Sniper {sid} niet gevonden.")
+        except Exception as e:
+            send_message(chat_id, f"Fout: {e}")
+
+    elif action == "reverse":
+        symbol = parts[1].upper().replace("-", "") if len(parts) > 1 else "BTCUSDT"
+        if not symbol.endswith("USDT"):
+            symbol += "USDT"
+        threshold = -5.0
+        for p in parts[2:]:
+            if p.startswith("threshold="):
+                try: threshold = float(p.split("=")[1])
+                except: pass
+        send_message(chat_id, f"Reverse backtest voor {symbol} (crashes ≤ {threshold}%)... even geduld.")
+        try:
+            r = requests.post(f"{INDICATOR_ENGINE_URL}/reverse-backtest",
+                              json={"symbol": symbol, "crash_threshold_pct": threshold,
+                                    "lookback_hours": [1, 4, 8, 24]}, timeout=30)
+            data = r.json()
+            lines = [
+                f"Reverse Backtest {symbol}",
+                f"Crash events: {data.get('crash_events_found', 0)}",
+                f"Beste predictor: {data.get('best_predictor', 'n/a')}",
+                "",
+                "Pre-crash fingerprint:",
+            ]
+            for sig in data.get("combined_fingerprint", {}).get("signals", []):
+                lines.append(f"• {sig}")
+            if not data.get("combined_fingerprint", {}).get("signals"):
+                lines.append("(geen consistent signaal gevonden)")
+            send_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            send_message(chat_id, f"Fout bij reverse backtest: {e}")
+
+    elif action in ("dip", "short", "breakout", "niveau"):
+        if len(parts) < 2:
+            send_message(chat_id, f"Gebruik: /sniper {action} <SYMBOL>")
+            return
+        symbol = parts[1].upper().replace("-", "")
+        if not symbol.endswith("USDT"):
+            symbol += "USDT"
+
+        payload = {"symbol": symbol, "mode": action, "max_wait_hours": 24}
+
+        for p in parts[2:]:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                try:
+                    if k == "rsi": payload["rsi_threshold"] = float(v)
+                    elif k == "target": payload["target_price"] = float(v)
+                    elif k == "direction": payload["direction"] = v
+                    elif k == "max_wait": payload["max_wait_hours"] = float(v)
+                except ValueError:
+                    pass
+
+        try:
+            r = requests.post(f"{INDICATOR_ENGINE_URL}/sniper/set", json=payload, timeout=10)
+            data = r.json()
+            s = data.get("sniper", {})
+            msg = (
+                f"Sniper gezet!\n"
+                f"Symbol: {s.get('symbol')}\n"
+                f"Mode: {s.get('mode','').upper()}\n"
+                f"ID: {data.get('id')}\n"
+                f"Max wacht: {s.get('max_wait_hours')}u\n"
+            )
+            if s.get("rsi_threshold"):
+                msg += f"RSI drempel: {s['rsi_threshold']}\n"
+            if s.get("target_price"):
+                msg += f"Doelprijs: ${s['target_price']:,.4f} ({s.get('direction','any')})\n"
+            msg += "\nIk stuur een bericht als de trigger afgaat."
+            send_message(chat_id, msg)
+        except Exception as e:
+            send_message(chat_id, f"Fout bij instellen sniper: {e}")
+    else:
+        send_message(chat_id, f"Onbekende actie: {action}\nGebruik: /sniper list|dip|short|breakout|niveau|cancel|reverse")
 
 
 def cmd_help(chat_id):
     send_message(chat_id,
-        "📋 *OpenClaw Discuss Bot*\n\n"
-        "/status — actueel marktoverzicht\n"
+        "OpenClaw Kimi Chat\n\n"
+        "Marktoverzicht:\n"
+        "/status — actueel overzicht\n"
         "/coins — Kimi's coin selectie\n"
         "/balance — demo account balans\n"
-        "/perf — signal performance stats\n"
-        "/backtest [SYMBOL] [interval] — bijv. /backtest BTC 4h\n"
-        "/zoek [query] — zoek actuele info op\n"
-        "/tradingstatus — trading halt/pauze status\n\n"
-        "🛑 *Noodstop commando's:*\n"
-        "/stop — NOODSTOP (staak alle orders)\n"
+        "/perf — signal performance\n\n"
+        "Historische data (4 jaar):\n"
+        "/patroon [SYMBOL] — patroonanalyse bijv. /patroon BTC\n"
+        "/signal [SYMBOL] [interval] — precedenten bijv. /signal ETH 4h\n"
+        "/backtest [SYMBOL] [interval] — bijv. /backtest BTC 4h\n\n"
+        "Sniper Bot:\n"
+        "/sniper dip BTC [rsi=28] — wacht op dip entry\n"
+        "/sniper short ETH [rsi=68] — wacht op short\n"
+        "/sniper niveau BTC target=80000 — prijs alert\n"
+        "/sniper list — actieve snipers\n"
+        "/sniper cancel <id> — annuleer\n"
+        "/sniper reverse BTC — crash analyse\n\n"
+        "Trading beheer:\n"
+        "/stop — NOODSTOP\n"
         "/start — hervat trading\n"
-        "/pauzeer [minuten] — pauze (standaard 30 min)\n"
-        "/ok <q_id> — bevestig ClawBot vraag\n"
-        "/skip <q_id> — sla ClawBot vraag over\n\n"
-        "🤖 *ClawBot (Claude AI):*\n"
-        "/clawbot — toon model status\n"
-        "/clawbot sonnet — upgrade naar Sonnet 4.6\n"
-        "/clawbot haiku  — terug naar Haiku (standaard)\n\n"
-        "🪙 *Coin Goedkeuring:*\n"
-        "/coingoedkeuren — toon wachtende nieuwe coins\n"
-        "/coingoedkeuren ja SYMBOL — keur coin goed\n"
-        "/coingoedkeuren nee SYMBOL — wijs coin af\n\n"
-        "/help — dit menu\n\n"
-        "💬 _Of stel gewoon een vraag over de markt!_"
+        "/pauzeer [minuten]\n"
+        "/ok <q_id> — bevestig vraag\n"
+        "/skip <q_id> — sla vraag over\n\n"
+        "Overig:\n"
+        "/zoek [query]\n"
+        "/clawbot — Claude model instelling\n"
+        "/coingoedkeuren\n"
+        "/help\n\n"
+        "Of stel gewoon een vraag!"
     )
+
+# ── Main handler ──────────────────────────────────────────────────────────────
 
 def handle(chat_id: str, user_id: str, text: str):
     if ALLOWED and user_id not in ALLOWED:
-        send_message(chat_id, "⛔ Niet toegestaan.")
+        send_message(chat_id, "Niet toegestaan.")
         return
     text = text.strip()
     if text.startswith("/status"):
@@ -536,6 +620,10 @@ def handle(chat_id: str, user_id: str, text: str):
         cmd_balance(chat_id)
     elif text.startswith("/perf"):
         cmd_perf(chat_id)
+    elif text.startswith("/patroon"):
+        cmd_patroon(chat_id, text[8:].strip())
+    elif text.startswith("/signal"):
+        cmd_signal(chat_id, text[7:].strip())
     elif text.startswith("/backtest"):
         cmd_backtest(chat_id, text[9:])
     elif text.startswith("/zoek"):
@@ -556,26 +644,17 @@ def handle(chat_id: str, user_id: str, text: str):
         cmd_clawbot(chat_id, text[8:].strip())
     elif text.startswith("/coingoedkeuren"):
         cmd_coingoedkeuren(chat_id, text[15:].strip())
-    elif text.startswith("/propose"):
-        payload = {"agent": "DiscussBot", "params": {"note": "manual"}, "reason": "handmatig"}
-        r = requests.post(f"{CONTROL_API_URL}/config/propose", headers=api_headers(), json=payload, timeout=5)
-        send_message(chat_id, f"✅ Voorstel: {r.text}")
-    elif text.startswith("/apply"):
-        parts = text.split()
-        if len(parts) < 2:
-            send_message(chat_id, "Gebruik: /apply <id>")
-            return
-        r = requests.post(f"{CONTROL_API_URL}/proposals/{int(parts[1])}/apply", headers=api_headers(), timeout=5)
-        send_message(chat_id, f"🟢 Toegepast: {r.text}")
+    elif text.startswith("/sniper"):
+        cmd_sniper(chat_id, text[7:].strip())
     elif text.startswith("/help"):
         cmd_help(chat_id)
     else:
-        # Vrije vraag → Kimi beantwoordt met marktcontext
+        # Vrije vraag -> Kimi beantwoordt met marktcontext
         state   = get_state()
         context = build_context(state)
-        send_message(chat_id, "🤔 Kimi denkt na...")
+        send_message(chat_id, "Kimi denkt na...")
         antwoord = ask_kimi(text, context)
-        send_message(chat_id, f"🤖 {antwoord}")
+        send_message(chat_id, antwoord)
 
 def main():
     offset = None

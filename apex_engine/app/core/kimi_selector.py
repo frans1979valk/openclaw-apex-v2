@@ -6,10 +6,24 @@ KIMI_API_KEY  = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
 KIMI_MODEL    = os.getenv("KIMI_MODEL", "moonshot-v1-32k")
 
-CONTROL_API_URL   = os.getenv("CONTROL_API_URL", "http://control_api:8080")
-CONTROL_API_TOKEN = os.getenv("CONTROL_API_TOKEN", "")
-TG_BOT_TOKEN      = os.getenv("TG_BOT_TOKEN_COORDINATOR", "")
-TG_CHAT_ID        = os.getenv("TG_CHAT_ID", "")
+CONTROL_API_URL      = os.getenv("CONTROL_API_URL", "http://control_api:8080")
+CONTROL_API_TOKEN    = os.getenv("CONTROL_API_TOKEN", "")
+TG_BOT_TOKEN         = os.getenv("TG_BOT_TOKEN_COORDINATOR", "")
+TG_CHAT_ID           = os.getenv("TG_CHAT_ID", "")
+INDICATOR_ENGINE_URL = os.getenv("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
+
+
+def _fetch_pattern_signals(symbols: List[str]) -> Dict[str, dict]:
+    """Haal pattern signalen op van indicator_engine voor een lijst coins."""
+    result = {}
+    for sym in symbols:
+        try:
+            r = requests.get(f"{INDICATOR_ENGINE_URL}/signal/{sym}?interval=1h", timeout=3)
+            if r.status_code == 200:
+                result[sym] = r.json()
+        except Exception:
+            pass
+    return result
 
 
 def _get_approved_coins() -> Set[str]:
@@ -93,9 +107,30 @@ def select_best_coins(tickers: List[Dict], top_n: int = 5) -> List[Dict]:
     # Kimi mag alleen kiezen uit safe/goedgekeurde coins
     candidates = safe_tickers if safe_tickers else tickers[:top_n]
 
+    # Haal pattern signalen op van indicator_engine
+    candidate_symbols = [t["symbol"] for t in candidates]
+    pattern_signals = _fetch_pattern_signals(candidate_symbols)
+
+    def _pattern_line(sym: str) -> str:
+        p = pattern_signals.get(sym)
+        if not p:
+            return ""
+        sig = p.get("signaal", "?")
+        wr = p.get("win_rate")
+        pnl = p.get("avg_pnl_1h")
+        prec = p.get("precedenten", 0)
+        rsi_z = (p.get("fingerprint") or {}).get("rsi_zone", "?")
+        parts = [f"pattern={sig}"]
+        if wr is not None:  parts.append(f"win_rate={wr:.0f}%")
+        if pnl is not None: parts.append(f"avg_pnl_1h={pnl:+.2f}%")
+        if prec:            parts.append(f"n={prec}")
+        parts.append(f"rsi={rsi_z}")
+        return " | " + ", ".join(parts)
+
     summary_safe = "\n".join(
         f"{t['symbol']}: prijs={t['price']:.4f} USDT, "
         f"24h={t['change_pct']:+.2f}%, vol={t['volume_usdt']/1e6:.1f}M USDT"
+        + _pattern_line(t["symbol"])
         for t in candidates
     )
 
@@ -111,16 +146,26 @@ def select_best_coins(tickers: List[Dict], top_n: int = 5) -> List[Dict]:
             f"{new_lines}"
         )
 
-    prompt = f"""Je bent een crypto trading analyst. Hier zijn de beschikbare USDT pairs:
+    prompt = f"""Je bent een crypto trading analyst met toegang tot historische patroondata.
+
+Hier zijn de beschikbare USDT pairs met marktdata EN historische patroon-statistieken:
+(pattern=signaal van patroon-engine, win_rate=historisch % winstgevend, avg_pnl_1h=gem. PnL na 1u)
 
 {summary_safe}{new_info}
 
 Selecteer de {top_n} beste coins voor een korte termijn trade (minuten tot uren).
 Kies ALLEEN uit de beschikbare coins (niet de nieuwe coins).
+
+Geef VOORKEUR aan coins met:
+- pattern=BUY of HOLD (niet AVOID)
+- win_rate > 50%
+- avg_pnl_1h positief
+- rsi=oversold of neutral_low (meer upside)
+
 Als je een nieuwe coin veelbelovend vindt, vermeld dit dan in je reden.
 
 Geef je antwoord UITSLUITEND als JSON array, geen extra tekst:
-[{{"symbol":"BTCUSDT","reden":"korte reden"}}, ...]"""
+[{{"symbol":"BTCUSDT","reden":"korte reden inclusief pattern info"}}, ...]"""
 
     try:
         client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL)

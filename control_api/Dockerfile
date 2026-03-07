@@ -10,5 +10,6 @@ RUN wget -q https://github.com/ta-lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
+COPY app/db_compat.py /app/db_compat.py
 ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8080"]

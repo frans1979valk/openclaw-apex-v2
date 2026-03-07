@@ -1,4 +1,4 @@
-import os, json, sqlite3, requests, secrets, random, time, logging
+import os, json, requests, secrets, random, time, logging
 import asyncio
 import numpy as np
 from datetime import datetime, timezone, timedelta
@@ -6,8 +6,9 @@ from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+from db_compat import get_conn, dict_cursor, adapt_query, is_pg
 
-DB_PATH = "/var/apex/apex.db"
+DB_PATH = "/var/apex/apex.db"  # fallback for SQLite mode
 STATE_PATH = "/var/apex/bot_state.json"
 LOG_PATH = "/var/apex/control_api.log"
 
@@ -46,14 +47,14 @@ def auth(x_api_key: str | None):
         return  # static API key OK
     # Check session token
     if x_api_key:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         ensure_auth_tables(conn)
         cur = conn.cursor()
-        cur.execute("SELECT expires_at FROM sessions WHERE token=?", (x_api_key,))
+        cur.execute(adapt_query("SELECT expires_at FROM sessions WHERE token=?"), (x_api_key,))
         row = cur.fetchone()
         conn.close()
         if row:
-            exp = datetime.fromisoformat(row[0])
+            exp = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(row[0])
             if datetime.now(timezone.utc) < exp:
                 return  # valid session
     raise HTTPException(status_code=401, detail="Unauthorized")
@@ -101,11 +102,12 @@ def auth_request(body: AuthRequest):
     code = str(random.randint(100000, 999999))
     expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_auth_tables(conn)
+    cur = conn.cursor()
     # Verwijder oude codes voor dit email
-    conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
-    conn.execute("INSERT INTO otp_codes(email, code, expires_at) VALUES (?,?,?)", (email, code, expires))
+    cur.execute(adapt_query("DELETE FROM otp_codes WHERE email=?"), (email,))
+    cur.execute(adapt_query("INSERT INTO otp_codes(email, code, expires_at) VALUES (?,?,?)"), (email, code, expires))
     conn.commit()
     conn.close()
 
@@ -125,19 +127,19 @@ def auth_verify(body: AuthVerify):
     email = body.email.strip().lower()
     code  = body.code.strip()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_auth_tables(conn)
     cur  = conn.cursor()
-    cur.execute("SELECT code, expires_at FROM otp_codes WHERE email=? ORDER BY rowid DESC LIMIT 1", (email,))
+    cur.execute(adapt_query("SELECT code, expires_at FROM otp_codes WHERE email=? ORDER BY code DESC LIMIT 1"), (email,))
     row = cur.fetchone()
 
     if not row:
         conn.close()
         raise HTTPException(status_code=401, detail="Geen code aangevraagd")
 
-    stored_code, expires_at = row
-    if datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
-        conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
+    stored_code, expires_at = row[0], row[1]
+    if datetime.fromisoformat(str(expires_at)) < datetime.now(timezone.utc):
+        cur.execute(adapt_query("DELETE FROM otp_codes WHERE email=?"), (email,))
         conn.commit()
         conn.close()
         raise HTTPException(status_code=401, detail="Code verlopen")
@@ -149,8 +151,8 @@ def auth_verify(body: AuthVerify):
     # Code correct → maak sessie aan (24 uur)
     token    = secrets.token_hex(32)
     sess_exp = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-    conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
-    conn.execute("INSERT INTO sessions(token, email, expires_at) VALUES (?,?,?)", (token, email, sess_exp))
+    cur.execute(adapt_query("DELETE FROM otp_codes WHERE email=?"), (email,))
+    cur.execute(adapt_query("INSERT INTO sessions(token, email, expires_at) VALUES (?,?,?)"), (token, email, sess_exp))
     conn.commit()
     conn.close()
 
@@ -174,15 +176,15 @@ def signal_performance(limit: int = 50, x_api_key: str | None = Header(default=N
     """Terugkijken: wat had elk signaal opgeleverd als je het had gevolgd?"""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(adapt_query("""
             SELECT id, ts, symbol, signal, active_signals,
                    entry_price, price_15m, price_1h, price_4h,
                    pnl_15m_pct, pnl_1h_pct, pnl_4h_pct, status
             FROM signal_performance
             ORDER BY id DESC LIMIT ?
-        """, (limit,))
+        """), (limit,))
         rows = cur.fetchall()
         conn.close()
         result = []
@@ -214,7 +216,7 @@ def ensure_tables(conn):
 @app.get("/proposals")
 def list_proposals(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_tables(conn)
     cur = conn.cursor()
     cur.execute("SELECT id, ts, agent, params_json, reason, status FROM proposals ORDER BY id DESC LIMIT 200")
@@ -225,11 +227,11 @@ def list_proposals(x_api_key: str | None = Header(default=None, alias="X-API-KEY
 @app.post("/config/propose")
 def propose(p: Proposal, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_tables(conn)
     cur = conn.cursor()
     ts = datetime.now(timezone.utc).isoformat()
-    cur.execute("INSERT INTO proposals(ts, agent, params_json, reason, status) VALUES (?, ?, ?, ?, 'pending')",
+    cur.execute(adapt_query("INSERT INTO proposals(ts, agent, params_json, reason, status) VALUES (?, ?, ?, ?, 'pending')"),
                 (ts, p.agent, json.dumps(p.params, ensure_ascii=False), p.reason))
     conn.commit()
     pid = cur.lastrowid
@@ -239,21 +241,21 @@ def propose(p: Proposal, x_api_key: str | None = Header(default=None, alias="X-A
 @app.post("/proposals/{proposal_id}/apply")
 def apply_proposal(proposal_id: int, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_tables(conn)
     cur = conn.cursor()
     # Lees proposal data voor executie
-    cur.execute("SELECT agent, params_json, reason, status FROM proposals WHERE id=?", (proposal_id,))
+    cur.execute(adapt_query("SELECT agent, params_json, reason, status FROM proposals WHERE id=?"), (proposal_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Proposal niet gevonden")
-    agent, params_json, reason, status = row
+    agent, params_json, reason, status = row[0], row[1], row[2], row[3]
     if status == "applied":
         conn.close()
         return {"ok": True, "applied": proposal_id, "message": "Al uitgevoerd"}
     # Update status
-    cur.execute("UPDATE proposals SET status='applied' WHERE id=?", (proposal_id,))
+    cur.execute(adapt_query("UPDATE proposals SET status='applied' WHERE id=?"), (proposal_id,))
     conn.commit()
     conn.close()
     # Voer de parameter wijziging daadwerkelijk uit
@@ -269,10 +271,10 @@ def apply_proposal(proposal_id: int, x_api_key: str | None = Header(default=None
 @app.post("/proposals/{proposal_id}/reject")
 def reject_proposal(proposal_id: int, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     ensure_tables(conn)
     cur = conn.cursor()
-    cur.execute("SELECT status FROM proposals WHERE id=?", (proposal_id,))
+    cur.execute(adapt_query("SELECT status FROM proposals WHERE id=?"), (proposal_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -280,7 +282,7 @@ def reject_proposal(proposal_id: int, x_api_key: str | None = Header(default=Non
     if row[0] == "applied":
         conn.close()
         raise HTTPException(status_code=400, detail="Proposal is al uitgevoerd, kan niet meer afgewezen worden")
-    cur.execute("UPDATE proposals SET status='rejected' WHERE id=?", (proposal_id,))
+    cur.execute(adapt_query("UPDATE proposals SET status='rejected' WHERE id=?"), (proposal_id,))
     conn.commit()
     conn.close()
     return {"ok": True, "rejected": proposal_id}
@@ -351,7 +353,8 @@ def backtest(symbol: str, interval: str = "1h", limit: int = 500,
 # ── Historische Backtest (6 maanden) ────────────────────────────────────────
 
 def _ensure_hist_table(conn):
-    conn.execute("""CREATE TABLE IF NOT EXISTS historical_backtest(
+    cur = conn.cursor()
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS historical_backtest(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_ts TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -367,7 +370,7 @@ def _ensure_hist_table(conn):
         pnl_1h_pct REAL,
         pnl_4h_pct REAL,
         pnl_24h_pct REAL
-    )""")
+    )"""))
     conn.commit()
 
 def _fetch_klines_paginated(symbol: str, interval: str, months: int) -> list:
@@ -536,13 +539,14 @@ def _run_hist_signals(klines: list, symbol: str, interval: str, months: int, run
     return signals_found
 
 def _store_hist_results(conn, rows: list):
-    conn.executemany("""
+    cur = conn.cursor()
+    cur.executemany(adapt_query("""
         INSERT INTO historical_backtest
           (run_ts, symbol, interval, months, candle_ts, signal, active_signals,
            entry_price, price_1h, price_4h, price_24h,
            pnl_1h_pct, pnl_4h_pct, pnl_24h_pct)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, [(r["run_ts"], r["symbol"], r["interval"], r["months"], r["candle_ts"],
+    """), [(r["run_ts"], r["symbol"], r["interval"], r["months"], r["candle_ts"],
            r["signal"], r["active"], r["entry"],
            r["p1h"], r["p4h"], r["p24h"],
            r["pnl1h"], r["pnl4h"], r["pnl24h"]) for r in rows])
@@ -592,9 +596,10 @@ def historical_backtest(
         rows = _run_hist_signals(klines, symbol, interval, months, run_ts)
 
         # Opslaan in DB (verwijder eerdere run voor zelfde symbol+interval)
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         _ensure_hist_table(conn)
-        conn.execute("DELETE FROM historical_backtest WHERE symbol=? AND interval=? AND months=?",
+        cur = conn.cursor()
+        cur.execute(adapt_query("DELETE FROM historical_backtest WHERE symbol=? AND interval=? AND months=?"),
                      (symbol, interval, months))
         _store_hist_results(conn, rows)
         conn.close()
@@ -640,26 +645,26 @@ def historical_signals(
 ):
     """Haal de individuele signalen op van de meest recente historische backtest."""
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     _ensure_hist_table(conn)
     cur = conn.cursor()
     sym = symbol.upper()
     if signal_filter:
-        cur.execute("""
+        cur.execute(adapt_query("""
             SELECT candle_ts, signal, active_signals, entry_price,
                    pnl_1h_pct, pnl_4h_pct, pnl_24h_pct
             FROM historical_backtest
             WHERE symbol=? AND interval=? AND months=? AND signal=?
             ORDER BY candle_ts DESC LIMIT ?
-        """, (sym, interval, months, signal_filter.upper(), limit))
+        """), (sym, interval, months, signal_filter.upper(), limit))
     else:
-        cur.execute("""
+        cur.execute(adapt_query("""
             SELECT candle_ts, signal, active_signals, entry_price,
                    pnl_1h_pct, pnl_4h_pct, pnl_24h_pct
             FROM historical_backtest
             WHERE symbol=? AND interval=? AND months=?
             ORDER BY candle_ts DESC LIMIT ?
-        """, (sym, interval, months, limit))
+        """), (sym, interval, months, limit))
     rows = cur.fetchall()
     conn.close()
     return [{"ts": r[0], "signal": r[1], "active": json.loads(r[2] or "[]"),
@@ -672,24 +677,24 @@ def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY"))
     """Toon demo account balans overzicht — echte virtuele $1000 tracking."""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         cur = conn.cursor()
 
         # Demo balance tabel (aanmaken als hij nog niet bestaat)
-        conn.execute("""CREATE TABLE IF NOT EXISTS demo_balance(
+        cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS demo_balance(
             id INTEGER PRIMARY KEY CHECK (id = 1),
             balance REAL NOT NULL DEFAULT 1000.0,
             peak_balance REAL NOT NULL DEFAULT 1000.0,
             total_trades INTEGER DEFAULT 0,
             winning_trades INTEGER DEFAULT 0,
             total_volume_usdt REAL DEFAULT 0
-        )""")
-        conn.execute("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)")
+        )"""))
+        cur.execute(adapt_query("INSERT OR IGNORE INTO demo_balance(id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)"))
         conn.commit()
 
         cur.execute("SELECT balance, peak_balance, total_trades, winning_trades, total_volume_usdt FROM demo_balance WHERE id=1")
         row = cur.fetchone()
-        balance, peak, total, wins, vol = row if row else (1000.0, 1000.0, 0, 0, 0)
+        balance, peak, total, wins, vol = (row[0], row[1], row[2], row[3], row[4]) if row else (1000.0, 1000.0, 0, 0, 0)
 
         # Signal performance stats
         cur.execute("""
@@ -700,12 +705,12 @@ def get_balance(x_api_key: str | None = Header(default=None, alias="X-API-KEY"))
         sp = cur.fetchone()
 
         # Recente demo trades
-        conn.execute("""CREATE TABLE IF NOT EXISTS demo_account(
+        cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS demo_account(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT, symbol TEXT, action TEXT, price REAL,
             virtual_size_usdt REAL, virtual_pnl_usdt REAL DEFAULT 0,
             balance_after REAL, signal TEXT, note TEXT
-        )""")
+        )"""))
         cur.execute("""
             SELECT ts, symbol, action, price, virtual_size_usdt, virtual_pnl_usdt, signal
             FROM demo_account ORDER BY id DESC LIMIT 10
@@ -1054,14 +1059,16 @@ def history_prices(symbol: str, hours: int = 24,
     """Historische prijs snapshots voor een coin."""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute(
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(adapt_query(
             """SELECT ts, price, rsi, signal, change_pct, tf_bias, volume_usdt
                FROM price_snapshots
                WHERE symbol=? AND ts >= datetime('now', ?)
-               ORDER BY ts ASC LIMIT 500""",
+               ORDER BY ts ASC LIMIT 500"""),
             (symbol.upper(), f"-{hours} hours")
-        ).fetchall()
+        )
+        rows = cur.fetchall()
         conn.close()
         return {"symbol": symbol.upper(), "hours": hours, "data": [
             {"ts": r[0], "price": r[1], "rsi": r[2], "signal": r[3],
@@ -1078,13 +1085,15 @@ def history_crash(symbol: str, hours: int = 48,
     """Historische pre-crash scores voor een coin."""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute(
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(adapt_query(
             """SELECT ts, score FROM crash_score_log
                WHERE symbol=? AND ts >= datetime('now', ?)
-               ORDER BY ts ASC LIMIT 1000""",
+               ORDER BY ts ASC LIMIT 1000"""),
             (symbol.upper(), f"-{hours} hours")
-        ).fetchall()
+        )
+        rows = cur.fetchall()
         conn.close()
         return {"symbol": symbol.upper(), "hours": hours,
                 "data": [{"ts": r[0], "score": r[1]} for r in rows]}
@@ -1098,7 +1107,8 @@ def history_events(hours: int = 72, event_type: str = "", symbol: str = "",
     """Recente marktgebeurtenissen (BTC cascade, flash crash, pre-crash, enz.)."""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
+        cur = conn.cursor()
         query = ("SELECT ts, event_type, symbol, severity, value, description "
                  "FROM market_events WHERE ts >= datetime('now', ?)")
         params = [f"-{hours} hours"]
@@ -1107,7 +1117,8 @@ def history_events(hours: int = 72, event_type: str = "", symbol: str = "",
         if symbol:
             query += " AND symbol=?"; params.append(symbol.upper())
         query += " ORDER BY ts DESC LIMIT 200"
-        rows = conn.execute(query, params).fetchall()
+        cur.execute(adapt_query(query), params)
+        rows = cur.fetchall()
         conn.close()
         return {"hours": hours, "events": [
             {"ts": r[0], "type": r[1], "symbol": r[2],
@@ -1125,27 +1136,28 @@ def history_summary(symbol: str,
     auth(x_api_key)
     try:
         sym = symbol.upper()
-        conn = sqlite3.connect(DB_PATH)
-        p = conn.execute(
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(adapt_query(
             """SELECT AVG(price), MIN(price), MAX(price), COUNT(*),
                       AVG(rsi), MAX(rsi), MIN(rsi)
                FROM price_snapshots WHERE symbol=?
-               AND ts >= datetime('now', '-24 hours')""", (sym,)
-        ).fetchone()
-        c = conn.execute(
+               AND ts >= datetime('now', '-24 hours')"""), (sym,))
+        p = cur.fetchone()
+        cur.execute(adapt_query(
             "SELECT MAX(score), AVG(score) FROM crash_score_log WHERE symbol=? "
-            "AND ts >= datetime('now', '-24 hours')", (sym,)
-        ).fetchone()
-        e = conn.execute(
+            "AND ts >= datetime('now', '-24 hours')"), (sym,))
+        c = cur.fetchone()
+        cur.execute(adapt_query(
             """SELECT event_type, severity, description, ts FROM market_events
                WHERE (symbol=? OR symbol IS NULL) AND ts >= datetime('now', '-48 hours')
-               ORDER BY ts DESC LIMIT 15""", (sym,)
-        ).fetchall()
-        sig = conn.execute(
+               ORDER BY ts DESC LIMIT 15"""), (sym,))
+        e = cur.fetchall()
+        cur.execute(adapt_query(
             """SELECT signal, COUNT(*), AVG(pnl_1h_pct)
                FROM signal_performance WHERE symbol=? AND status='closed'
-               GROUP BY signal ORDER BY COUNT(*) DESC LIMIT 5""", (sym,)
-        ).fetchall()
+               GROUP BY signal ORDER BY COUNT(*) DESC LIMIT 5"""), (sym,))
+        sig = cur.fetchall()
         conn.close()
         return {
             "symbol": sym,
@@ -1271,9 +1283,10 @@ def metrics_performance(
     """Geaggregeerde strategie-performance voor OpenClaw agents."""
     auth(x_api_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
+        cur = conn.cursor()
         # Per signaaltype: win rate, gem. PnL 1u en 4u
-        sig_rows = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT signal,
                    COUNT(*) as n,
                    ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
@@ -1284,9 +1297,10 @@ def metrics_performance(
             FROM signal_performance
             WHERE pnl_1h_pct IS NOT NULL
             GROUP BY signal ORDER BY n DESC LIMIT 10
-        """).fetchall()
+        """))
+        sig_rows = cur.fetchall()
         # Per coin: win rate
-        coin_rows = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT symbol,
                    COUNT(*) as n,
                    ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
@@ -1294,21 +1308,24 @@ def metrics_performance(
             FROM signal_performance
             WHERE pnl_1h_pct IS NOT NULL
             GROUP BY symbol ORDER BY n DESC LIMIT 10
-        """).fetchall()
+        """))
+        coin_rows = cur.fetchall()
         # Overall
-        overall = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT COUNT(*) as total,
                    ROUND(AVG(CASE WHEN pnl_1h_pct > 0 THEN 1.0 ELSE 0.0 END) * 100, 1) as win_rate,
                    ROUND(AVG(pnl_1h_pct), 3) as avg_pnl_1h,
                    ROUND(SUM(pnl_1h_pct), 3) as total_pnl_1h
             FROM signal_performance WHERE pnl_1h_pct IS NOT NULL
-        """).fetchone()
+        """))
+        overall = cur.fetchone()
         # Pre-crash statistieken
-        crash_stats = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT ROUND(AVG(score), 1) as avg_score, ROUND(MAX(score), 1) as max_score,
                    COUNT(*) as readings
             FROM crash_score_log WHERE ts >= datetime('now', '-24 hours')
-        """).fetchone()
+        """))
+        crash_stats = cur.fetchone()
         conn.close()
         return {
             "overall": {
@@ -1373,13 +1390,13 @@ async def sse_stream(token: str = Query(default="")):
     """
     # Auth check
     if token != TOKEN:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         ensure_auth_tables(conn)
         cur = conn.cursor()
-        cur.execute("SELECT expires_at FROM sessions WHERE token=?", (token,))
+        cur.execute(adapt_query("SELECT expires_at FROM sessions WHERE token=?"), (token,))
         row = cur.fetchone()
         conn.close()
-        if not row or datetime.fromisoformat(row[0]) <= datetime.now(timezone.utc):
+        if not row or (row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(row[0])) <= datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     async def event_generator():
@@ -1438,10 +1455,12 @@ def admin_logs(
 # ── Policy constants (hardcoded) ──────────────────────────────────────────────
 PARAM_BOUNDS = {
     "rsi_buy_threshold":  (20, 40),
+    "rsi_chop_max":       (45, 65),
     "rsi_sell_threshold": (60, 80),
     "stoploss_pct":       (1.5, 6.0),
     "takeprofit_pct":     (3.0, 12.0),
     "position_size_base": (1, 5),
+    "max_positions":      (1, 6),
 }
 MAX_APPLIES_PER_DAY = 3
 FLASHCRASH_AUTO_ACTIONS = {"PAUSE", "NO_BUY", "EXIT_ONLY"}
@@ -1600,11 +1619,12 @@ def create_proposal(body: ProposalV2, x_api_key: str | None = Header(default=Non
     ts = datetime.now(timezone.utc).isoformat()
     otp = str(random.randint(100000, 999999))
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     _ensure_proposals_v2(conn)
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(adapt_query(
         "INSERT INTO proposals_v2(id, ts, type, payload_json, reason, requested_by, requires_confirm, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
         (proposal_id, ts, body.type, json.dumps(body.payload), body.reason,
          body.requested_by, 0 if auto_apply else 1,
          "auto_applied" if auto_apply else "pending"),
@@ -1645,13 +1665,13 @@ def list_proposals_v2(
 ):
     """Lijst voorstellen met optionele status filter."""
     auth(x_api_key)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     _ensure_proposals_v2(conn)
     cur = conn.cursor()
     if state == "all":
         cur.execute("SELECT * FROM proposals_v2 ORDER BY ts DESC LIMIT 100")
     else:
-        cur.execute("SELECT * FROM proposals_v2 WHERE status=? ORDER BY ts DESC LIMIT 100", (state,))
+        cur.execute(adapt_query("SELECT * FROM proposals_v2 WHERE status=? ORDER BY ts DESC LIMIT 100"), (state,))
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
     conn.close()
@@ -1679,10 +1699,10 @@ def confirm_proposal(
     _check_applies_limit()
 
     # Load proposal
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     _ensure_proposals_v2(conn)
     cur = conn.cursor()
-    cur.execute("SELECT type, payload_json, reason, status FROM proposals_v2 WHERE id=?", (proposal_id,))
+    cur.execute(adapt_query("SELECT type, payload_json, reason, status FROM proposals_v2 WHERE id=?"), (proposal_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -1708,7 +1728,7 @@ def confirm_proposal(
 
     # Apply
     ts = datetime.now(timezone.utc).isoformat()
-    conn.execute("UPDATE proposals_v2 SET status='confirmed', confirmed_at=?, applied_at=? WHERE id=?",
+    cur.execute(adapt_query("UPDATE proposals_v2 SET status='confirmed', confirmed_at=?, applied_at=? WHERE id=?"),
                  (ts, ts, proposal_id))
     conn.commit()
     conn.close()

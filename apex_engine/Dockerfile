@@ -14,5 +14,6 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
+COPY app/db_compat.py /app/db_compat.py
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "-m", "app.main"]

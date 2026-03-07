@@ -1,0 +1,248 @@
+-- OpenClaw Apex — PostgreSQL Schema
+-- Migratie vanuit SQLite, alle tabellen + nieuwe tabellen voor pattern agent
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Core trading
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS events (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source      TEXT NOT NULL,
+    level       TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    payload_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    executor    TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    side        TEXT NOT NULL,
+    size        TEXT NOT NULL,
+    price       REAL,
+    raw_json    TEXT
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Proposals
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS proposals (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    agent       TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    reason      TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE TABLE IF NOT EXISTS proposals_v2 (
+    id              TEXT PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    type            TEXT NOT NULL,
+    payload_json    TEXT NOT NULL DEFAULT '{}',
+    reason          TEXT NOT NULL DEFAULT '',
+    requested_by    TEXT NOT NULL DEFAULT 'unknown',
+    requires_confirm INTEGER NOT NULL DEFAULT 1,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    confirmed_at    TIMESTAMPTZ,
+    applied_at      TIMESTAMPTZ
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Signal tracking
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS signal_performance (
+    id              SERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol          TEXT NOT NULL,
+    signal          TEXT NOT NULL,
+    active_signals  TEXT,
+    entry_price     REAL NOT NULL,
+    price_15m       REAL,
+    price_1h        REAL,
+    price_4h        REAL,
+    pnl_15m_pct     REAL,
+    pnl_1h_pct      REAL,
+    pnl_4h_pct      REAL,
+    status          TEXT DEFAULT 'open'
+);
+
+CREATE TABLE IF NOT EXISTS historical_backtest (
+    id              SERIAL PRIMARY KEY,
+    run_ts          TIMESTAMPTZ NOT NULL,
+    symbol          TEXT NOT NULL,
+    interval        TEXT NOT NULL,
+    months          INTEGER NOT NULL,
+    candle_ts       TIMESTAMPTZ NOT NULL,
+    signal          TEXT NOT NULL,
+    active_signals  TEXT,
+    entry_price     REAL NOT NULL,
+    price_1h        REAL,
+    price_4h        REAL,
+    price_24h       REAL,
+    pnl_1h_pct      REAL,
+    pnl_4h_pct      REAL,
+    pnl_24h_pct     REAL
+);
+
+CREATE TABLE IF NOT EXISTS market_context (
+    id              SERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol          TEXT NOT NULL,
+    signal          TEXT NOT NULL,
+    entry_price     REAL NOT NULL,
+    rsi_5m          REAL,
+    tf_confirm_score INTEGER,
+    tf_bias         TEXT,
+    tf_1h_rsi       REAL,
+    tf_4h_rsi       REAL,
+    outcome_1h_pct  REAL,
+    outcome_4h_pct  REAL,
+    status          TEXT DEFAULT 'open'
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Demo account
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS demo_account (
+    id                  SERIAL PRIMARY KEY,
+    ts                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol              TEXT NOT NULL,
+    action              TEXT NOT NULL,
+    price               REAL NOT NULL,
+    virtual_size_usdt   REAL NOT NULL,
+    virtual_pnl_usdt    REAL DEFAULT 0,
+    balance_after       REAL NOT NULL,
+    signal              TEXT,
+    note                TEXT
+);
+
+CREATE TABLE IF NOT EXISTS demo_balance (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    balance         REAL NOT NULL DEFAULT 1000.0,
+    peak_balance    REAL NOT NULL DEFAULT 1000.0,
+    total_trades    INTEGER DEFAULT 0,
+    winning_trades  INTEGER DEFAULT 0,
+    total_volume_usdt REAL DEFAULT 0
+);
+
+-- Seed demo balance als die nog niet bestaat
+INSERT INTO demo_balance (id, balance, peak_balance) VALUES (1, 1000.0, 1000.0)
+ON CONFLICT (id) DO NOTHING;
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Price & market data
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS price_snapshots (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol      TEXT NOT NULL,
+    price       REAL NOT NULL,
+    rsi         REAL,
+    volume_usdt REAL,
+    signal      TEXT,
+    change_pct  REAL,
+    atr         REAL,
+    tf_bias     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS crash_score_log (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol      TEXT NOT NULL,
+    score       REAL NOT NULL,
+    ob_pct      REAL,
+    vol_pct     REAL,
+    rsi_pct     REAL,
+    mom_pct     REAL
+);
+
+CREATE TABLE IF NOT EXISTS exchange_consensus_log (
+    id              SERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol          TEXT NOT NULL,
+    consensus       REAL,
+    coinbase_price  REAL,
+    binance_price   REAL,
+    bybit_price     REAL,
+    okx_price       REAL,
+    kraken_price    REAL,
+    blofin_price    REAL,
+    divergence_pct  REAL,
+    coinbase_lead   INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS market_events (
+    id              SERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    event_type      TEXT NOT NULL,
+    symbol          TEXT,
+    severity        TEXT,
+    value           REAL,
+    description     TEXT,
+    payload_json    TEXT
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- OHLCV historische data (kimi_pattern_agent)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS ohlcv_history (
+    symbol      TEXT NOT NULL,
+    interval    TEXT NOT NULL,
+    ts          TIMESTAMPTZ NOT NULL,
+    open        REAL,
+    high        REAL,
+    low         REAL,
+    close       REAL,
+    volume      REAL,
+    UNIQUE(symbol, interval, ts)
+);
+
+CREATE TABLE IF NOT EXISTS pattern_reports (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    report_date DATE NOT NULL UNIQUE,
+    analysis    JSONB,
+    input_stats JSONB,
+    indicators  JSONB
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Auth (Command Center + control_api)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS otp_codes (
+    email       TEXT NOT NULL,
+    code        TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token       TEXT PRIMARY KEY,
+    email       TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Indices voor performance
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
+CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_signal_perf_ts ON signal_performance(ts);
+CREATE INDEX IF NOT EXISTS idx_signal_perf_symbol ON signal_performance(symbol);
+CREATE INDEX IF NOT EXISTS idx_demo_account_ts ON demo_account(ts);
+CREATE INDEX IF NOT EXISTS idx_price_snapshots_ts ON price_snapshots(ts);
+CREATE INDEX IF NOT EXISTS idx_crash_score_ts ON crash_score_log(ts);
+CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_interval ON ohlcv_history(symbol, interval);
+CREATE INDEX IF NOT EXISTS idx_market_events_ts ON market_events(ts);
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+CREATE INDEX IF NOT EXISTS idx_proposals_v2_status ON proposals_v2(status);

@@ -1,5 +1,5 @@
 """Kimi Pattern Agent — nachtelijke patroonanalyse op historische data."""
-import os, json, sqlite3, logging, time
+import os, json, logging, time
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from openai import OpenAI
 from apscheduler.schedulers.background import BackgroundScheduler
+from db_compat import get_conn, dict_cursor, adapt_query
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("kimi_pattern_agent")
@@ -82,25 +83,27 @@ def calc_ema(values: np.ndarray, period: int) -> np.ndarray:
 # ── OHLCV opslaan in DB ──────────────────────────────────────────────────────
 
 def ensure_ohlcv_table():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS ohlcv_history(
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS ohlcv_history(
         symbol TEXT NOT NULL,
         interval TEXT NOT NULL,
         ts TEXT NOT NULL,
         open REAL, high REAL, low REAL, close REAL, volume REAL,
         UNIQUE(symbol, interval, ts)
-    )""")
+    )"""))
     conn.commit()
     conn.close()
 
 
 def store_ohlcv(symbol: str, interval: str, df: pd.DataFrame):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
+    cur = conn.cursor()
     for _, row in df.iterrows():
         try:
-            conn.execute(
-                """INSERT OR IGNORE INTO ohlcv_history(symbol, interval, ts, open, high, low, close, volume)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            cur.execute(
+                adapt_query("""INSERT INTO ohlcv_history(symbol, interval, ts, open, high, low, close, volume)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"""),
                 (symbol, interval, row["ts"].isoformat(), row["open"], row["high"], row["low"], row["close"], row["volume"])
             )
         except Exception:
@@ -131,11 +134,11 @@ def collect_all_ohlcv():
 def get_signal_stats() -> dict:
     """Haal signaal performance statistieken op uit de DB."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = get_conn()
+        cur = dict_cursor(conn)
 
         # Signaal performance per coin
-        cur = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT symbol, signal, COUNT(*) as n,
                    ROUND(AVG(pnl_1h_pct), 3) as avg_pnl_1h,
                    ROUND(AVG(pnl_4h_pct), 3) as avg_pnl_4h
@@ -143,27 +146,27 @@ def get_signal_stats() -> dict:
             WHERE ts > datetime('now', '-7 days')
             GROUP BY symbol, signal
             ORDER BY avg_pnl_1h DESC
-        """)
+        """))
         signal_perf = [dict(r) for r in cur.fetchall()]
 
         # Demo account trades
-        cur = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT symbol, action, COUNT(*) as n,
                    ROUND(AVG(virtual_pnl_usdt), 2) as avg_pnl
             FROM demo_account
             WHERE ts > datetime('now', '-7 days')
             GROUP BY symbol, action
-        """)
+        """))
         demo_trades = [dict(r) for r in cur.fetchall()]
 
         # Recente events
-        cur = conn.execute("""
+        cur.execute(adapt_query("""
             SELECT source, level, title, ts
             FROM events
             WHERE ts > datetime('now', '-24 hours')
             ORDER BY ts DESC
             LIMIT 20
-        """)
+        """))
         recent_events = [dict(r) for r in cur.fetchall()]
 
         conn.close()
@@ -180,14 +183,15 @@ def get_signal_stats() -> dict:
 def get_ohlcv_summary() -> dict:
     """Kort overzicht van opgeslagen OHLCV data per coin."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.execute("""
+        conn = get_conn()
+        cur = dict_cursor(conn)
+        cur.execute("""
             SELECT symbol, interval, COUNT(*) as candles,
                    MIN(ts) as first_ts, MAX(ts) as last_ts
             FROM ohlcv_history
             GROUP BY symbol, interval
         """)
-        rows = [dict(sqlite3.Row(cur, r)) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
         conn.close()
         return {"ohlcv_coverage": rows}
     except Exception as e:
@@ -230,19 +234,19 @@ def run_kimi_analysis() -> dict:
     prompt = f"""Je bent een crypto trading pattern analyst. Analyseer de volgende data van de afgelopen 7 dagen en identificeer patronen.
 
 ## Signaal Performance (afgelopen 7 dagen)
-{json.dumps(stats['signal_performance'], indent=2)}
+{json.dumps(stats['signal_performance'], indent=2, default=str)}
 
 ## Demo Trades
-{json.dumps(stats['demo_trades'], indent=2)}
+{json.dumps(stats['demo_trades'], indent=2, default=str)}
 
 ## Recente Events (24u)
-{json.dumps(stats['recent_events'], indent=2)}
+{json.dumps(stats['recent_events'], indent=2, default=str)}
 
 ## Huidige Indicatoren (4h)
 {json.dumps(coin_indicators, indent=2)}
 
 ## OHLCV Data Beschikbaarheid
-{json.dumps(ohlcv_summary.get('ohlcv_coverage', []), indent=2)}
+{json.dumps(ohlcv_summary.get('ohlcv_coverage', []), indent=2, default=str)}
 
 Geef je analyse in het volgende JSON formaat:
 {{
