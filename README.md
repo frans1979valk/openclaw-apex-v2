@@ -28,6 +28,65 @@ Een volledig autonome AI crypto trading bot met 16 Docker containers, 40 coins, 
 
 ---
 
+## OpenClaw — Het Masterframework
+
+**OpenClaw is de ruggengraat van het hele platform.** Het is het agent-runtime framework waarop Jojo1 draait — niet slechts een "gateway", maar het brein dat alle platform-componenten coördineert.
+
+### Wat is OpenClaw?
+
+OpenClaw is een TypeScript-gebaseerd operator OS voor autonome AI agents. Het combineert:
+- **Claude Sonnet 4.6** als taalmodel (Jojo's intelligentie)
+- **Telegram interface** als primair communicatiekanaal
+- **Tool systeem** — Python scripts die Jojo kan aanroepen (indicator_engine, control_api, sniper, etc.)
+- **Skill systeem** — complexe workflows als herbruikbare "skills"
+- **Multi-agent coördinatie** — Jojo kan sub-agents aansturen (Research Agent, Risk Agent)
+- **Persistent memory** — Jojo onthoudt context over sessies heen
+- **Collab systeem** — gestructureerde communicatie tussen Jojo en Dev via inbox bestanden
+
+### Jojo1 als AI Operator
+
+Jojo1 (draait in `openclaw_gateway`) is **geen simpele chatbot**. Het is een autonome operator die:
+
+1. **Marktdata opvraagt** via tool_intelligence.py → indicator_engine
+2. **Config wijzigt** via proposals → control_api → apex_engine
+3. **Snipers instelt** via tool_sniper.py → indicator_engine
+4. **Trading beheert** via trading_halt.json, skip_coins, max_positions
+5. **Analyses maakt** via Research Agent + Risk Agent sub-workflows
+6. **Rapporteert** naar Frans via Telegram
+
+### OpenClaw Architectuur
+
+```
+Frans (Telegram)
+     │
+     ▼
+openclaw_gateway (OpenClaw runtime — TypeScript)
+     │
+     ├── Claude Sonnet 4.6 (Jojo's taalmodel)
+     │
+     ├── Tools:
+     │    ├── tool_intelligence.py → indicator_engine:8099
+     │    ├── tool_sniper.py       → indicator_engine:8099
+     │    ├── tool_market.py       → market_oracle:8095
+     │    └── tool_analytics.py   → jojo_analytics:8097
+     │
+     ├── Control:
+     │    └── proposals → control_api:8080 → apex_engine config
+     │
+     └── Collab:
+          └── /workspace/collab/inbox/ ↔ Dev (Claude Code)
+```
+
+### Waarom OpenClaw de "master" is
+
+Zonder OpenClaw is het platform een verzameling losse microservices. OpenClaw maakt het tot een **autonoom systeem**:
+- Alle beslissingen gaan via Jojo1 (OpenClaw)
+- Jojo coördineert wanneer welke service wordt aangesproken
+- Jojo interpreteert marktdata en zet het om in acties
+- Jojo communiceert met Frans en Dev als enige centrale operator
+
+---
+
 ## Features
 
 ### Trading Filters (apex_engine)

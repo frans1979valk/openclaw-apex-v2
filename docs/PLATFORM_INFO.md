@@ -7,7 +7,7 @@
 
 ## 1. Wat is dit systeem?
 
-Een volledig autonome AI crypto trading platform bestaande uit 16 Docker containers. Het platform:
+Een volledig autonome AI crypto trading platform bestaande uit 16 Docker containers. Het platform **werkt volledig automatisch — zonder handmatige tussenkomst van Frans**. Het:
 - Selecteert automatisch de beste coins via AI (Kimi)
 - Analyseert marktdata met technische indicatoren (4 jaar historische data)
 - Plaatst virtuele trades (demo mode — geen echt geld)
@@ -18,6 +18,66 @@ Een volledig autonome AI crypto trading platform bestaande uit 16 Docker contain
 **Eigenaar:** Frans
 **AI Operator:** Jojo1 (draait in `openclaw_gateway` container, Claude Sonnet 4.6)
 **Platform taal:** Nederlands (Telegram), Python (services), TypeScript (gateway)
+
+---
+
+## 1b. OpenClaw — Het Masterframework (Ruggengraat)
+
+**OpenClaw is het hart van het platform.** Het is een TypeScript-gebaseerd agent runtime framework dat het platform volledig autonoom laat werken — **helemaal zonder dat Frans iets hoeft te doen**.
+
+### Wat OpenClaw doet
+
+OpenClaw draait als `openclaw_gateway` container en is de enige component die alle andere services coördineert:
+
+| Functie | Beschrijving |
+|---------|--------------|
+| **AI motor** | Claude Sonnet 4.6 als taalmodel — begrijpt marktdata, neemt beslissingen |
+| **Tool systeem** | Python scripts aanroepen: indicator_engine, control_api, sniper, markt data |
+| **Skill systeem** | Complexe workflows (analyse, rapport, strategie) als herbruikbare skills |
+| **Multi-agent** | Sub-agents aansturen: Research Agent, Risk Agent voor diepere analyses |
+| **Telegram** | Primair communicatiekanaal — ontvangt vragen, stuurt alerts en rapporten |
+| **Persistent memory** | Onthoudt context, beslissingen en leereffecten over sessies heen |
+| **Collab systeem** | Inbox-gebaseerde communicatie met Dev (Claude Code) voor updates |
+
+### Autonome werking (zonder Frans)
+
+Het platform draait 24/7 volledig autonoom:
+
+```
+[apex_engine] — Elke 10s: analyseert 40 coins, plaatst demo orders
+     ↑
+[indicator_engine] — Levert TA-data (RSI, MACD, EMA, Sniper monitoring)
+     ↑
+[tg_coordinator_bot] — Elke 30min: marktrapport naar Telegram
+     ↑
+[kimi_pattern_agent] — Elke nacht 03:00: patroonanalyse op historische data
+     ↑
+[openclaw_gateway / Jojo1] — Coördineert alles, reageert op events
+```
+
+### Jojo1 als autonome operator
+
+Jojo1 is **geen chatbot** — het is een autonome operator die zelfstandig:
+1. Marktdata opvraagt en interpreteert
+2. Configuraties aanpast via het proposals systeem
+3. Snipers instelt bij gunstige condities
+4. Trading pauzeert bij gevaar (pre-crash signalen)
+5. Frans informeert via Telegram wanneer actie relevant is
+
+Frans hoeft alleen in te grijpen als hij dat **zelf wil** — het systeem beslist autonoom.
+
+### OpenClaw vs. de andere services
+
+```
+OpenClaw (master/brein)
+    ├── apex_engine        → voert trades uit (slaaf van config)
+    ├── indicator_engine   → levert data (slaaf van queries)
+    ├── control_api        → beheert config (slaaf van proposals)
+    ├── tg_discuss_bot     → Kimi marktchat (onafhankelijk)
+    └── alle andere svcs   → ondersteunende roles
+```
+
+**OpenClaw is de enige component die nadenkt. De rest voert uit.**
 
 ---
 
