@@ -17,6 +17,8 @@ This guide takes you from zero to a fully running platform: containers up, histo
 
 > The platform is designed to run on a VPS. All services run inside Docker — no local Python or Node.js installation needed.
 
+> **OpenClaw framework:** The AI operator (Jojo1) uses the open-source [openclaw/openclaw](https://github.com/openclaw/openclaw) TypeScript framework. It is automatically downloaded from GitHub during `docker compose build`. You do not need to clone it separately.
+
 ---
 
 ## Step 1 — Install Docker
@@ -113,17 +115,29 @@ CONTROL_API_TOKEN=<same token as in control_api.env>
 
 ---
 
-## Step 4 — Start the platform
+## Step 4 — Build the OpenClaw framework (Jojo1)
+
+The AI operator (Jojo1) is built on the open-source [openclaw/openclaw](https://github.com/openclaw/openclaw) TypeScript framework. During the build, Docker clones and compiles this framework automatically.
+
+> **Note:** The build requires an internet connection and takes **3–8 minutes** on the first run (Node.js dependencies + TypeScript compile).
 
 ```bash
-# Build and start all containers
+# Build the gateway container first (downloads openclaw from GitHub)
+docker compose build openclaw_gateway
+
+# Then build and start everything else
 docker compose up -d
 
 # Check that all containers are running
 docker compose ps
 ```
 
-All containers should show status `Up`. The first start takes 3–5 minutes as Docker builds the images.
+All containers should show status `Up`.
+
+> If the build fails with pnpm or Node.js errors, retry with:
+> ```bash
+> docker compose build --no-cache openclaw_gateway
+> ```
 
 ---
 
