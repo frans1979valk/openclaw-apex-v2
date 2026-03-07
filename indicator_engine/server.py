@@ -1461,11 +1461,20 @@ def _run_historical_enrich():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        # Maak tabel aan
+        # Maak tabel aan (IF NOT EXISTS — wijzigt geen bestaande kolommen)
         for stmt in HISTORICAL_CONTEXT_SCHEMA.strip().split(";"):
             s = stmt.strip()
             if s:
                 cur.execute(s)
+        conn.commit()
+
+        # Migraties: voeg ontbrekende kolommen toe (idempotent)
+        cur.execute("""
+            ALTER TABLE historical_context ADD COLUMN IF NOT EXISTS btc_regime TEXT
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hctx_btcregime ON historical_context(btc_regime)
+        """)
         conn.commit()
 
         # Vul via JOIN historical_backtest × indicators_data

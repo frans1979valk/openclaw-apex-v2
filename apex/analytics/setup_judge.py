@@ -100,13 +100,16 @@ def _verdict(win_pct, avg_1h, n):
 
 
 def _hctx_aggregate(where_clause: str) -> tuple:
-    """Haalt n/avg_1h/avg_4h/win1h op uit historical_context met gegeven WHERE."""
+    """Haalt n/avg_1h/avg_4h/win1h op uit historical_context met gegeven WHERE.
+    Geen ROUND() in SQL — adapt_query() in jojo_analytics mangelt ROUND+NULLIF combis.
+    Ronden gebeurt in _parse_row().
+    """
     rows = _query(f"""
         SELECT COUNT(*) as n,
-            ROUND(AVG(pnl_1h_pct)::numeric, 3) as avg_1h,
-            ROUND(AVG(pnl_4h_pct)::numeric, 3) as avg_4h,
-            ROUND(100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)::numeric
-                  / NULLIF(COUNT(*), 0), 1) as win1h
+            AVG(pnl_1h_pct) as avg_1h,
+            AVG(pnl_4h_pct) as avg_4h,
+            100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(*), 0) as win1h
         FROM historical_context
         WHERE pnl_1h_pct IS NOT NULL
           AND symbol != 'USDCUSDT'
@@ -116,13 +119,13 @@ def _hctx_aggregate(where_clause: str) -> tuple:
 
 
 def _parse_row(row) -> dict:
-    """Converteert query-rij naar dict met n/avg_1h/avg_4h/win_pct_1h."""
-    if not row or row[0] is None:
+    """Converteert query-rij (dict van jojo_analytics) naar intern dict."""
+    if not row or row.get("n") is None:
         return None
-    n = int(row[0])
-    avg_1h = float(row[1]) if row[1] is not None else None
-    avg_4h = float(row[2]) if row[2] is not None else None
-    win1h  = float(row[3]) if row[3] is not None else None
+    n = int(row["n"])
+    avg_1h = round(float(row["avg_1h"]), 3) if row.get("avg_1h") is not None else None
+    avg_4h = round(float(row["avg_4h"]), 3) if row.get("avg_4h") is not None else None
+    win1h  = round(float(row["win1h"]),  1) if row.get("win1h")  is not None else None
     return {"n": n, "avg_1h": avg_1h, "avg_4h": avg_4h, "win_pct_1h": win1h}
 
 
