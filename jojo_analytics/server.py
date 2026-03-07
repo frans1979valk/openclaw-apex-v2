@@ -287,7 +287,7 @@ def db_query(body: QueryRequest):
     try:
         conn = get_conn()
         cur = dict_cursor(conn)
-        cur.execute(stripped)
+        cur.execute(adapt_query(stripped))
         rows = cur.fetchmany(MAX_ROWS)
         columns = [desc[0] for desc in cur.description] if cur.description else []
         result = [dict(r) for r in rows]
