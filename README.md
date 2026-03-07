@@ -198,24 +198,29 @@ GET  /chart/markers/{symbol}         candles + EMAs + crash scores for chart
 
 ---
 
-## Setup (development reference)
+## Installation
 
+See the full step-by-step installation guide: **[INSTALL.md](INSTALL.md)**
+
+It covers:
+1. Docker setup on a VPS
+2. Configuring all secrets (BloFin, Telegram, Anthropic)
+3. Starting all containers
+4. Loading 4 years of historical OHLCV data
+5. Running the backtest to populate P1 setup scores
+6. Setting up Jojo1 (AI operator via Telegram)
+7. Accessing the dashboard
+8. Starting the paper trading testbot
+9. Enabling HTTPS
+
+**Quick start:**
 ```bash
-# 1. Clone
-git clone https://github.com/frans1979valk/openclaw-apex-v2.git
+git clone https://github.com/Frans1979valk/openclaw-apex-v2.git
 cd openclaw-apex-v2
-
-# 2. Create secrets
-cp secrets/*.env.example secrets/*.env   # fill in API keys
-
-# 3. Start
+cp secrets/*.env.example secrets/*.env   # fill in your API keys
 docker compose up -d
-
-# 4. Open dashboard
-# https://your-vps-ip:4000
+# → open http://your-vps-ip:4000
 ```
-
-**Required secrets:** `CONTROL_API_TOKEN`, `TG_BOT_TOKEN_COORDINATOR`, `TG_CHAT_ID`, `DATABASE_URL`
 
 ---
 
