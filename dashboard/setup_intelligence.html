@@ -307,6 +307,7 @@
           <th onclick="setSortField('avg_1h')">P&amp;L 1h</th>
           <th onclick="setSortField('avg_4h')">P&amp;L 4h</th>
           <th onclick="setSortField('n')">n</th>
+          <th onclick="setSortField('last_signal_hours_ago')" title="Hoe lang geleden het signaal voor het laatste actief was">Laatste signaal</th>
         </tr>
       </thead>
       <tbody id="table-body"></tbody>
@@ -404,6 +405,15 @@ function regimeChip(r) {
   return `<span class="chip chip-neutraal">${r}</span>`;
 }
 
+// ── Laatste signaal formatter ──────────────────────────────────────────────────
+function lastSignalFmt(hours) {
+  if (hours == null) return `<span style="color:#8b949e">—</span>`;
+  if (hours <= 6)   return `<span style="color:#3fb950;font-weight:600">Nu actief</span>`;
+  if (hours <= 24)  return `<span style="color:#3fb950">${Math.round(hours)}u geleden</span>`;
+  if (hours <= 72)  return `<span style="color:#d29922">${Math.round(hours/24)}d geleden</span>`;
+  return `<span style="color:#8b949e">${Math.round(hours/24)}d geleden</span>`;
+}
+
 // ── PnL formatter ─────────────────────────────────────────────────────────────
 function pnlFmt(v) {
   if (v == null) return `<span class="pnl-neu">—</span>`;
@@ -471,6 +481,7 @@ function renderTable() {
       <td>${pnlFmt(s.avg_1h)}</td>
       <td>${pnlFmt(s.avg_4h)}</td>
       <td class="n-cell">${s.n}</td>
+      <td>${lastSignalFmt(s.last_signal_hours_ago)}</td>
     </tr>`;
   }).join("");
 }

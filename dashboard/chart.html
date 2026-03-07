@@ -168,9 +168,13 @@
       <input type="checkbox" id="ema200-chk" checked onchange="toggleEma(200)"/>
       <span class="ema-dot" style="background:#58a6ff"></span> 200
     </label>
-    <label class="ema-toggle" title="Verdicts tonen">
-      <input type="checkbox" id="verdicts-chk" checked onchange="toggleVerdicts()"/>
-      <span style="color:#8b949e">Verdicts</span>
+    <label class="ema-toggle" title="Setup Intel STERK/TOESTAAN momenten tonen">
+      <input type="checkbox" id="verdicts-chk" checked onchange="rebuildMarkers()"/>
+      <span style="color:#8b949e">Setup Intel</span>
+    </label>
+    <label class="ema-toggle" title="Testbot trades tonen">
+      <input type="checkbox" id="bot-chk" checked onchange="rebuildMarkers()"/>
+      <span style="color:#3fb950">Bot trades</span>
     </label>
   </div>
 
@@ -227,6 +231,8 @@ let _ema200Series = null;
 let _scoreSeries  = null;
 let _volSeries    = null;
 let _allVerdicts  = [];
+let _allBotEntries = [];
+let _allBotExits   = [];
 let _showVerdicts = true;
 let _liveTimer    = null;
 let _syncLock     = false;
@@ -374,26 +380,77 @@ async function fetchBinanceCandles(sym, interval, limit = 400) {
   }));
 }
 
-// ── Verdict markers ───────────────────────────────────────────────────────────
-function buildMarkers(verdicts) {
-  if (!_showVerdicts) return [];
-  return verdicts.map(v => {
-    const color = VERDICT_COLORS[v.verdict] || "#8b949e";
-    const isSkip = v.verdict === "SKIP";
-    const pnlStr = v.pnl_1h != null
-      ? ` ${v.pnl_1h >= 0 ? "+" : ""}${v.pnl_1h.toFixed(2)}%`
-      : "";
-    const label = (v.verdict === "TOESTAAN_ZWAK" ? "ZWAK" : (v.verdict || "?")) + pnlStr;
-    return {
-      time:     v.time,
-      position: isSkip ? "aboveBar" : "belowBar",
-      color:    color,
-      shape:    isSkip ? "arrowDown" : "arrowUp",
-      text:     label,
-      id:       `v_${v.time}`,
-    };
-  });
+// ── Snap timestamp naar dichtstbijzijnde candle-open tijd ────────────────────
+// LW Charts vereist dat marker.time exact overeenkomt met een candle.time
+function snapToCandle(unixSec) {
+  const secs = {"1h": 3600, "4h": 14400, "1d": 86400, "15m": 900, "5m": 300}[_tf] || 3600;
+  return Math.floor(unixSec / secs) * secs;
 }
+
+// ── Markers: verdicts + bot entries + bot exits ───────────────────────────────
+function buildAllMarkers() {
+  const markers = [];
+  const showV   = document.getElementById("verdicts-chk").checked;
+  const showBot = document.getElementById("bot-chk").checked;
+
+  if (showV) {
+    for (const v of _allVerdicts) {
+      const color  = VERDICT_COLORS[v.verdict] || "#8b949e";
+      const isSkip = v.verdict === "SKIP";
+      const pnlStr = v.pnl_1h != null
+        ? ` ${v.pnl_1h >= 0 ? "+" : ""}${v.pnl_1h.toFixed(2)}%` : "";
+      // Signaalafkorting tonen zodat STERK(BB) vs ZWAK(BUY) duidelijk is
+      const sigAbbr = {"BREAKOUT_BULL":"BB","MOMENTUM":"MOM","PERFECT_DAY":"PD","BUY":"BUY"}[v.signal] || (v.signal||"");
+      const verdictLabel = v.verdict === "TOESTAAN_ZWAK" ? "ZWAK" : (v.verdict === "TOESTAAN" ? "TOES" : (v.verdict || "?"));
+      const label = `${verdictLabel}(${sigAbbr})${pnlStr}`;
+      markers.push({
+        time: v.time, position: isSkip ? "aboveBar" : "belowBar",
+        color, shape: isSkip ? "arrowDown" : "arrowUp",
+        text: label, _type: "verdict", _data: v,
+      });
+    }
+  }
+
+  if (showBot) {
+    // Bot entry markers (groen omhoog) — snap naar candle-open tijd
+    for (const e of _allBotEntries) {
+      const snapped  = snapToCandle(e.time);
+      const scoreStr = e.setup_score != null ? ` s${Math.round(e.setup_score)}` : "";
+      markers.push({
+        time: snapped, position: "belowBar",
+        color: "#3fb950", shape: "arrowUp",
+        text: `BOT${scoreStr}`, _type: "bot_entry", _data: e,
+      });
+    }
+    // Bot exit markers — snap naar candle-open tijd
+    for (const x of _allBotExits) {
+      const snapped = snapToCandle(x.time);
+      const reason  = (x.close_reason || "").toUpperCase();
+      let color, shape, label;
+      if (reason === "TP") {
+        color = "#58a6ff"; shape = "circle";
+        label = `TP ${x.net_pnl_usd != null ? (x.net_pnl_usd >= 0 ? "+" : "") + x.net_pnl_usd.toFixed(2) + "$" : ""}`;
+      } else if (reason === "SL") {
+        color = "#f85149"; shape = "square";
+        label = `SL ${x.net_pnl_usd != null ? x.net_pnl_usd.toFixed(2) + "$" : ""}`;
+      } else {
+        color = "#d29922"; shape = "square";
+        label = `TMT ${x.net_pnl_usd != null ? (x.net_pnl_usd >= 0 ? "+" : "") + x.net_pnl_usd.toFixed(2) + "$" : ""}`;
+      }
+      markers.push({
+        time: snapped, position: "aboveBar",
+        color, shape, text: label, _type: "bot_exit", _data: x,
+      });
+    }
+  }
+
+  // LW Charts vereist gesorteerde markers
+  markers.sort((a, b) => a.time - b.time);
+  return markers;
+}
+
+// Oude alias voor backwards compat met toggleVerdicts
+function buildMarkers(verdicts) { return buildAllMarkers(); }
 
 // ── Legend updaten ─────────────────────────────────────────────────────────────
 function updateLegend(param) {
@@ -434,7 +491,7 @@ function getPriceDecimals(price) {
   return 6;
 }
 
-// ── Verdict panel ─────────────────────────────────────────────────────────────
+// ── Verdict / bot detail panel ────────────────────────────────────────────────
 function showVerdictPanel(v) {
   const panel = document.getElementById("verdict-panel");
   const color = VERDICT_COLORS[v.verdict] || "#8b949e";
@@ -459,8 +516,58 @@ function showVerdictPanel(v) {
   panel.classList.add("show");
 }
 
+function showBotEntryPanel(e) {
+  const panel = document.getElementById("verdict-panel");
+  const dec   = getPriceDecimals(e.entry_price);
+  const ts    = new Date(e.time * 1000).toLocaleString("nl-NL", {timeZone:"UTC"});
+  document.getElementById("vp-title").innerHTML =
+    `<span style="color:#3fb950">&#11014; BOT BUY</span> — Trade #${e.trade_id} &nbsp;
+     <span style="color:#8b949e;font-weight:400;font-size:.72rem">${ts}</span>`;
+  const rows = [
+    ["Entry prijs",  `$${e.entry_price.toFixed(dec)}`],
+    ["Signaal",      e.signal || "—"],
+    ["Setup score",  e.setup_score != null ? Math.round(e.setup_score) : "—"],
+    ["Inzet",        `$${e.stake_usd}`],
+    ["TP / SL",      `+${e.tp_pct}% / -${e.sl_pct}%`],
+    ["Status",       `<span style="color:${e.status==="open"?"#3fb950":"#8b949e"}">${e.status}</span>`],
+  ];
+  document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
+    `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`).join("");
+  panel.classList.add("show");
+}
+
+function showBotExitPanel(x) {
+  const panel = document.getElementById("verdict-panel");
+  const reason = (x.close_reason || "").toUpperCase();
+  const color  = reason === "TP" ? "#58a6ff" : reason === "SL" ? "#f85149" : "#d29922";
+  const icon   = reason === "TP" ? "&#9679;" : reason === "SL" ? "&#9632;" : "&#9632;";
+  const dec    = getPriceDecimals(x.close_price || x.entry_price);
+  const ts     = new Date(x.time * 1000).toLocaleString("nl-NL", {timeZone:"UTC"});
+  const netColor = (x.net_pnl_usd || 0) >= 0 ? "#3fb950" : "#f85149";
+  document.getElementById("vp-title").innerHTML =
+    `<span style="color:${color}">${icon} ${reason}</span> — Trade #${x.trade_id} &nbsp;
+     <span style="color:#8b949e;font-weight:400;font-size:.72rem">${ts}</span>`;
+  const rows = [
+    ["Exit prijs",  x.close_price != null ? `$${x.close_price.toFixed(dec)}` : "—"],
+    ["Entry prijs", x.entry_price != null ? `$${x.entry_price.toFixed(dec)}` : "—"],
+    ["Bruto P&L",   x.pnl_pct != null ? `${x.pnl_pct>=0?"+":""}${x.pnl_pct.toFixed(3)}%` : "—"],
+    ["Kosten",      x.fee_usd != null ? `-$${x.fee_usd.toFixed(3)}` : "—"],
+    ["Netto P&L",   x.net_pnl_usd != null
+      ? `<span style="color:${netColor}">${x.net_pnl_usd>=0?"+":""}$${x.net_pnl_usd.toFixed(3)}</span>` : "—"],
+    ["Duur",        x.duration_min != null ? `${x.duration_min} min` : "—"],
+  ];
+  document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
+    `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`).join("");
+  panel.classList.add("show");
+}
+
 function closeVerdictPanel() {
   document.getElementById("verdict-panel").classList.remove("show");
+}
+
+function rebuildMarkers() {
+  if (!_candleSeries) return;
+  _candleSeries.setMarkers(buildAllMarkers());
 }
 
 // ── Data laden ────────────────────────────────────────────────────────────────
@@ -485,14 +592,20 @@ async function loadData() {
         ema55Data  = computeEmaJs(candles, 55);
         ema200Data = computeEmaJs(candles, 200);
       }
-      _allVerdicts = [];  // geen verdict markers voor 5m/15m
+      _allVerdicts   = [];
+      _allBotEntries = [];
+      _allBotExits   = [];
       if (_scoreSeries) _scoreSeries.setData([]);
 
     } else {
-      // Backend data (1h/4h)
-      const r = await fetch(`${API}/chart/markers/${_sym}?interval=${_tf}&limit=400`, {headers: H});
-      if (!r.ok) throw new Error(`chart/markers ${r.status}`);
-      const data = await r.json();
+      // Backend data (1h/4h) — laad alles parallel
+      const [chartResp, botResp, setupResp] = await Promise.all([
+        fetch(`${API}/chart/markers/${_sym}?interval=${_tf}&limit=400`, {headers: H}),
+        fetch(`${API}/testbot/markers/${_sym}`, {headers: H}).catch(() => null),
+        fetch(`${API}/setup/chart-markers/${_sym}?days=180`, {headers: H}).catch(() => null),
+      ]);
+      if (!chartResp.ok) throw new Error(`chart/markers ${chartResp.status}`);
+      const data = await chartResp.json();
 
       candles = data.candles || [];
 
@@ -508,21 +621,37 @@ async function loadData() {
         ema200Data = computeEmaJs(candles, 200);
       }
 
-      // Verdicts
-      _allVerdicts = data.verdicts || [];
+      // Setup Intel markers (nieuw systeem: STERK/TOESTAAN/TOESTAAN_ZWAK)
+      if (setupResp && setupResp.ok) {
+        const setupData = await setupResp.json();
+        _allVerdicts = setupData.markers || [];
+      } else {
+        _allVerdicts = [];
+      }
+
+      // Bot markers
+      if (botResp && botResp.ok) {
+        const botData   = await botResp.json();
+        _allBotEntries  = botData.entries || [];
+        _allBotExits    = botData.exits   || [];
+      } else {
+        _allBotEntries = [];
+        _allBotExits   = [];
+      }
 
       // Crash scores in score paneel
       if (data.crash_scores && data.crash_scores.length) {
         const scoreData = data.crash_scores.map(s => ({time: s.time, value: s.score}));
         _scoreSeries.setData(scoreData);
-        document.getElementById("status-verdicts").textContent =
-          `Crash scores: ${scoreData.length}`;
       } else {
         _scoreSeries.setData([]);
       }
 
+      // Status: toon STERK/TOESTAAN verdeling
+      const nSterk    = _allVerdicts.filter(v => v.verdict === "STERK").length;
+      const nToestaan = _allVerdicts.filter(v => v.verdict === "TOESTAAN").length;
       document.getElementById("status-verdicts").textContent =
-        `Verdicts: ${_allVerdicts.length}`;
+        `STERK: ${nSterk} | TOESTAAN: ${nToestaan} | Bot: ${_allBotEntries.length} trades`;
     }
 
     // Candles in grafiek zetten
@@ -536,21 +665,32 @@ async function loadData() {
     // EMA visibility toepassen
     applyEmaVisibility();
 
-    // Verdict markers zetten
-    if (_allVerdicts.length) {
-      const markers = buildMarkers(_allVerdicts);
-      _candleSeries.setMarkers(markers);
+    // Alle markers zetten (verdicts + bot entries + bot exits)
+    _candleSeries.setMarkers(buildAllMarkers());
 
-      // Click op marker: toon detail panel
-      _chartMain.subscribeClick(param => {
-        if (!param || !param.time) return;
-        // Zoek dichtstbijzijnde verdict (binnen 1 candle)
-        const interval_secs = {"1h": 3600, "4h": 14400, "5m": 300, "15m": 900}[_tf] || 3600;
-        const nearby = _allVerdicts.find(v => Math.abs(v.time - param.time) <= interval_secs);
-        if (nearby) showVerdictPanel(nearby);
-        else closeVerdictPanel();
-      });
-    }
+    // Click op marker: toon juist detail panel
+    // Setup markers gebruiken gesnapte tijden, dus vergelijk ook op gesnapte candle-tijd
+    _chartMain.subscribeClick(param => {
+      if (!param || !param.time) return;
+      const tol = ({"1h": 3600, "4h": 14400, "5m": 300, "15m": 900}[_tf] || 3600);
+
+      // Vind dichtstbijzijnde in elk type (vergelijk op param.time = candle open tijd)
+      const closest = (arr, key) => arr.reduce((best, item) => {
+        const d = Math.abs(snapToCandle(item[key] || item.time) - param.time);
+        return (!best || d < best.d) ? {item, d} : best;
+      }, null);
+
+      const bx = closest(_allBotExits, "time");
+      if (bx && bx.d <= tol)  { showBotExitPanel(bx.item); return; }
+
+      const be = closest(_allBotEntries, "time");
+      if (be && be.d <= tol)  { showBotEntryPanel(be.item); return; }
+
+      const sv = closest(_allVerdicts, "time");
+      if (sv && sv.d <= tol)  { showVerdictPanel(sv.item); return; }
+
+      closeVerdictPanel();
+    });
 
     // Status
     document.getElementById("status-candles").textContent = `Candles: ${candles.length}`;
@@ -582,12 +722,7 @@ function applyEmaVisibility() {
 
 function toggleEma(period) { applyEmaVisibility(); }
 
-function toggleVerdicts() {
-  _showVerdicts = document.getElementById("verdicts-chk").checked;
-  if (_candleSeries) {
-    _candleSeries.setMarkers(_showVerdicts ? buildMarkers(_allVerdicts) : []);
-  }
-}
+function toggleVerdicts() { rebuildMarkers(); }
 
 // ── Live updates (Binance, voor 5m/15m) ──────────────────────────────────────
 function startLiveUpdates() {

@@ -1950,6 +1950,23 @@ def _sj_process_row(row, current_regime: str) -> dict | None:
     else:
         regime_fit = "onbekend"
 
+    # Bepaal hoeveel uur geleden het laatste signaal was
+    last_ts_raw = row.get("last_signal_ts")
+    last_signal_ts = None
+    last_signal_hours_ago = None
+    if last_ts_raw:
+        try:
+            if isinstance(last_ts_raw, datetime):
+                ldt = last_ts_raw if last_ts_raw.tzinfo else last_ts_raw.replace(tzinfo=timezone.utc)
+            else:
+                ldt = datetime.fromisoformat(str(last_ts_raw).replace(" ", "T"))
+                if ldt.tzinfo is None:
+                    ldt = ldt.replace(tzinfo=timezone.utc)
+            last_signal_ts = ldt.isoformat()
+            last_signal_hours_ago = round((datetime.now(timezone.utc) - ldt).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+
     return {
         "symbol":      row.get("symbol"),
         "signal":      row.get("signal"),
@@ -1967,6 +1984,8 @@ def _sj_process_row(row, current_regime: str) -> dict | None:
         "win_bear":    win_bear,
         "avg_1h_bull": avg_bull,
         "avg_1h_bear": avg_bear,
+        "last_signal_ts":         last_signal_ts,
+        "last_signal_hours_ago":  last_signal_hours_ago,
     }
 
 
@@ -1999,7 +2018,8 @@ def setup_scan(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
             SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END) as n_bear,
             AVG(CASE WHEN btc_regime = 'bear' THEN pnl_1h_pct END) as avg_1h_bear,
             100.0 * SUM(CASE WHEN btc_regime = 'bear' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
-                  / NULLIF(SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END), 0) as win1h_bear
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END), 0) as win1h_bear,
+            MAX(candle_ts) as last_signal_ts
         FROM historical_context
         WHERE pnl_1h_pct IS NOT NULL
           AND symbol != 'USDCUSDT'
@@ -2029,6 +2049,258 @@ def setup_scan(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
         "verdict_counts": verdicts,
         "total":          len(setups),
         "ts":             datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _detect_signal(row: dict) -> str | None:
+    """Detecteert actief signaaltype op basis van actuele indicator waarden."""
+    def _f(k): return float(row[k]) if row.get(k) is not None else None
+    rsi       = _f("rsi")
+    mh        = _f("macd_hist")
+    adx       = _f("adx")
+    sk        = _f("stoch_rsi_k")
+    sd        = _f("stoch_rsi_d")
+    vol_ratio = _f("volume_ratio")
+    bb_pos    = str(row.get("bb_position") or "")
+    ema_bull  = row.get("ema_bull") in (True, "true", "t", 1, "1", "True")
+
+    if rsi is None: return None
+
+    adx_strong  = adx is not None and adx > 25
+    macd_bull   = mh is not None and mh > 0
+
+    # BREAKOUT_BULL: prijs boven bovenste BB + RSI > 50 + hoog volume
+    if bb_pos == "above_upper" and rsi > 50 and vol_ratio is not None and vol_ratio > 1.5:
+        return "BREAKOUT_BULL"
+
+    # MOMENTUM: golden cross + RSI groeizone + MACD bullish + ADX trending
+    if ema_bull and 50 < rsi < 65 and macd_bull and adx_strong:
+        return "MOMENTUM"
+
+    # BUY via RSI-MACD: oversold + MACD draait omhoog
+    if rsi < 32 and macd_bull:
+        return "BUY"
+
+    # BUY via StochRSI oversold
+    if sk is not None and sd is not None and sk < 20 and sk > sd and rsi < 45:
+        return "BUY"
+
+    # BUY breed: oversold zone + niet dalend MACD
+    if rsi < 35 and mh is not None and mh >= -50:
+        return "BUY"
+
+    return None
+
+
+@app.get("/live/signals")
+def live_signals(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """
+    Actuele signalen per coin op basis van meest recente indicator waarden (1h).
+    Detecteert actief signaaltype + P1 verdict + historische stats.
+    """
+    auth(x_api_key)
+
+    # 1. Meest recente 1h indicators per coin
+    ind_rows = _sj_query("""
+        SELECT DISTINCT ON (symbol)
+            symbol,
+            EXTRACT(EPOCH FROM ts)::bigint as ts_unix,
+            ts::text as ts_str,
+            rsi, macd_hist, bb_width, bb_position,
+            ema21, ema55, ema200, ema_bull,
+            adx, stoch_rsi_k, stoch_rsi_d, volume_ratio, rsi_zone
+        FROM indicators_data
+        WHERE interval = '1h'
+          AND symbol != 'USDCUSDT'
+        ORDER BY symbol, ts DESC
+    """)
+
+    # 2. Aggregate P1 stats per (symbol, signal) — hergebruik setup/scan logica
+    btc_regime = _sj_btc_regime()
+    agg_rows = _sj_query("""
+        SELECT
+            symbol, signal,
+            COUNT(*) as n,
+            AVG(pnl_1h_pct) as avg_1h,
+            AVG(pnl_4h_pct) as avg_4h,
+            100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(*), 0) as win1h,
+            SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END) as n_bull,
+            AVG(CASE WHEN btc_regime = 'bull' THEN pnl_1h_pct END) as avg_1h_bull,
+            100.0 * SUM(CASE WHEN btc_regime = 'bull' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END), 0) as win1h_bull,
+            SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END) as n_bear,
+            AVG(CASE WHEN btc_regime = 'bear' THEN pnl_1h_pct END) as avg_1h_bear,
+            100.0 * SUM(CASE WHEN btc_regime = 'bear' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END), 0) as win1h_bear,
+            MAX(candle_ts) as last_signal_ts
+        FROM historical_context
+        WHERE pnl_1h_pct IS NOT NULL AND symbol != 'USDCUSDT'
+        GROUP BY symbol, signal HAVING COUNT(*) >= 5
+    """)
+
+    # Map (symbol, signal) → P1 info
+    p1_map: dict = {}
+    for row in agg_rows:
+        row["symbol"] = row.get("symbol")
+        result = _sj_process_row(row, btc_regime)
+        if result:
+            key = (result["symbol"], result["signal"])
+            p1_map[key] = result
+
+    # 3. Verwerk elke coin
+    VERDICT_ORDER = {"STERK": 0, "TOESTAAN": 1, "TOESTAAN_ZWAK": 2, "SKIP": 3, "ONBEKEND": 4}
+    signals = []
+    for row in ind_rows:
+        sym    = row.get("symbol")
+        signal = _detect_signal(row)
+        p1     = p1_map.get((sym, signal)) if signal else None
+
+        def _f(k): return round(float(row[k]), 2) if row.get(k) is not None else None
+
+        signals.append({
+            "symbol":       sym,
+            "ts_str":       row.get("ts_str"),
+            "ts_unix":      row.get("ts_unix"),
+            "rsi":          _f("rsi"),
+            "rsi_zone":     row.get("rsi_zone"),
+            "macd_hist":    _f("macd_hist"),
+            "adx":          _f("adx"),
+            "ema_bull":     row.get("ema_bull") in (True, "true", "t", 1, "1", "True"),
+            "bb_position":  row.get("bb_position"),
+            "volume_ratio": _f("volume_ratio"),
+            "signal":       signal,
+            "verdict":      p1["verdict"]      if p1 else None,
+            "setup_score":  p1["setup_score"]  if p1 else None,
+            "win_pct_1h":   p1["win_pct_1h"]   if p1 else None,
+            "avg_1h":       p1["avg_1h"]        if p1 else None,
+            "edge_strength": p1["edge_strength"] if p1 else None,
+            "regime_fit":   p1["regime_fit"]    if p1 else None,
+            "n":            p1["n"]             if p1 else None,
+        })
+
+    # Sorteer: actief signaal eerst, dan op verdict kwaliteit, dan op rsi laag→hoog
+    signals.sort(key=lambda x: (
+        0 if x["signal"] else 1,
+        VERDICT_ORDER.get(x["verdict"] or "ONBEKEND", 4),
+        x["rsi"] if x["rsi"] is not None else 99,
+    ))
+
+    n_active = sum(1 for s in signals if s["signal"])
+    n_sterk  = sum(1 for s in signals if s["verdict"] == "STERK" and s["signal"])
+
+    return {
+        "signals":    signals,
+        "btc_regime": btc_regime,
+        "n_active":   n_active,
+        "n_sterk":    n_sterk,
+        "total":      len(signals),
+        "ts":         datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/setup/chart-markers/{symbol}")
+def setup_chart_markers(
+    symbol: str,
+    days: int = Query(default=180, ge=7, le=730),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """
+    Setup Intelligence markers per historische candle voor chart.html.
+    Geeft STERK/TOESTAAN/TOESTAAN_ZWAK momenten terug vanuit historical_context,
+    gescoord met dezelfde P1-logica als /setup/scan.
+    """
+    auth(x_api_key)
+    sym = "".join(c for c in symbol if c.isalnum()).upper()
+
+    # 1. Aggregate stats per signal type voor dit symbool (zelfde query als /setup/scan)
+    btc_regime = _sj_btc_regime()
+    agg_rows = _sj_query(f"""
+        SELECT
+            signal,
+            COUNT(*) as n,
+            AVG(pnl_1h_pct)  as avg_1h,
+            AVG(pnl_4h_pct)  as avg_4h,
+            100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(*), 0) as win1h,
+            SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END) as n_bull,
+            AVG(CASE WHEN btc_regime = 'bull' THEN pnl_1h_pct END) as avg_1h_bull,
+            100.0 * SUM(CASE WHEN btc_regime = 'bull' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END), 0) as win1h_bull,
+            SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END) as n_bear,
+            AVG(CASE WHEN btc_regime = 'bear' THEN pnl_1h_pct END) as avg_1h_bear,
+            100.0 * SUM(CASE WHEN btc_regime = 'bear' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END), 0) as win1h_bear
+        FROM historical_context
+        WHERE symbol = '{sym}'
+          AND pnl_1h_pct IS NOT NULL
+        GROUP BY signal
+        HAVING COUNT(*) >= 5
+    """)
+
+    # Map signal → verdict + geaggregeerde stats
+    signal_info: dict = {}
+    for row in agg_rows:
+        row["symbol"] = sym
+        result = _sj_process_row(row, btc_regime)
+        if result:
+            signal_info[result["signal"]] = result
+
+    # 2. Alleen signalen met STERK/TOESTAAN/TOESTAAN_ZWAK verdict (SKIP = ruis op grafiek)
+    good_signals = [
+        sig for sig, info in signal_info.items()
+        if info["verdict"] in ("STERK", "TOESTAAN", "TOESTAAN_ZWAK")
+    ]
+    if not good_signals:
+        return {
+            "markers": [],
+            "signal_verdicts": {s: i["verdict"] for s, i in signal_info.items()},
+            "symbol": sym,
+            "total": 0,
+        }
+
+    sig_list = ", ".join(f"'{s}'" for s in good_signals)
+    hist_rows = _sj_query(f"""
+        SELECT
+            EXTRACT(EPOCH FROM candle_ts)::bigint as ts_unix,
+            signal,
+            pnl_1h_pct,
+            pnl_4h_pct,
+            rsi
+        FROM historical_context
+        WHERE symbol = '{sym}'
+          AND signal IN ({sig_list})
+          AND candle_ts >= NOW() - INTERVAL '{days} days'
+        ORDER BY candle_ts ASC
+        LIMIT 1000
+    """)
+
+    # 3. Bouw markers — koppel aggregate stats aan elke candle
+    markers = []
+    for row in hist_rows:
+        sig  = row.get("signal")
+        info = signal_info.get(sig, {})
+        ts   = int(row.get("ts_unix") or 0)
+        if not ts:
+            continue
+        markers.append({
+            "time":        ts,
+            "verdict":     info.get("verdict", "SKIP"),
+            "signal":      sig,
+            "pnl_1h":      row.get("pnl_1h_pct"),
+            "pnl_4h":      row.get("pnl_4h_pct"),
+            "rsi":         row.get("rsi"),
+            "win_pct":     info.get("win_pct_1h"),
+            "avg_1h_hist": info.get("avg_1h"),
+            "n":           info.get("n"),
+            "setup_score": info.get("setup_score"),
+        })
+
+    return {
+        "markers":         markers,
+        "signal_verdicts": {s: i["verdict"] for s, i in signal_info.items()},
+        "symbol":          sym,
+        "total":           len(markers),
     }
 
 
@@ -2340,3 +2612,82 @@ def testbot_history(
         "total_fee_usd": round(total_fee, 2),
         "ts":           datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/testbot/markers/{symbol}")
+def testbot_markers(
+    symbol: str,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Testbot entry/exit markers voor chart.html — tijdstempels als Unix epoch."""
+    auth(x_api_key)
+    sym = "".join(c for c in symbol if c.isalnum()).upper()
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT id, symbol, signal, setup_score, entry_price, entry_ts,
+               close_price, close_ts, close_reason, stake_usd,
+               tp_pct, sl_pct, tp_price, sl_price,
+               pnl_pct, pnl_usd, fee_usd, net_pnl_usd, status
+        FROM testbot_trades
+        WHERE symbol = ?
+        ORDER BY entry_ts ASC
+    """), (sym,))
+    rows = cur.fetchall()
+    conn.close()
+
+    def _to_unix(ts):
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            dt = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(str(ts).replace(" ", "T"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp()), dt
+
+    entries = []
+    exits   = []
+    for r in rows:
+        (tid, sym2, sig, score, ep, ets,
+         cp, cts, reason, stake,
+         tp_pct, sl_pct, tp_p, sl_p,
+         pnl_p, pnl_u, fee_u, net_u, status) = r
+        try:
+            ets_unix, ets_dt = _to_unix(ets)
+        except Exception:
+            continue
+
+        entries.append({
+            "trade_id":    tid,
+            "time":        ets_unix,
+            "entry_price": float(ep),
+            "signal":      sig,
+            "setup_score": float(score) if score is not None else None,
+            "stake_usd":   float(stake),
+            "tp_pct":      float(tp_pct),
+            "sl_pct":      float(sl_pct),
+            "status":      status,
+        })
+
+        if status == "closed" and cts:
+            try:
+                cts_unix, cts_dt = _to_unix(cts)
+                dur_min = round((cts_dt - ets_dt).total_seconds() / 60, 1)
+            except Exception:
+                continue
+            exits.append({
+                "trade_id":     tid,
+                "time":         cts_unix,
+                "close_price":  float(cp) if cp else None,
+                "close_reason": reason,
+                "entry_price":  float(ep),
+                "pnl_pct":      float(pnl_p)  if pnl_p  is not None else None,
+                "pnl_usd":      float(pnl_u)  if pnl_u  is not None else None,
+                "fee_usd":      float(fee_u)  if fee_u  is not None else None,
+                "net_pnl_usd":  float(net_u)  if net_u  is not None else None,
+                "duration_min": dur_min,
+            })
+
+    return {"entries": entries, "exits": exits, "symbol": sym}

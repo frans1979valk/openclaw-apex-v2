@@ -1,235 +1,254 @@
-# OpenClaw Apex Trading Platform v2
+# OpenClaw Apex — AI Crypto Trading Platform v2
 
-Een volledig autonome AI crypto trading bot met 16 Docker containers, 40 coins, 4 jaar historische data en een Sniper Bot. Draait op BloFin in **demo (paper trading)** mode.
+> **Paper trading** research platform with AI-driven setup scoring, live signal detection, historical backtesting, interactive charts, and an automated paper trading testbot. Built on BloFin demo mode — **no real money at risk.**
 
-> Volledige documentatie: [docs/PLATFORM_INFO.md](docs/PLATFORM_INFO.md)
-
----
-
-## Architectuur (16 containers)
-
-| Service | Beschrijving | Poort |
-|---|---|---|
-| `apex_engine` | Trading engine — AI filters, signalen, BloFin demo orders | — |
-| `control_api` | REST API + config + proposals + auth | 8080 |
-| `indicator_engine` | 40 coins x 4jr historische data + TA + Sniper Bot | 8099 |
-| `postgres` | PostgreSQL 16 database (17 tabellen) | 5432 |
-| `openclaw_gateway` | Jojo1 AI operator (Claude Sonnet 4.6 + Telegram) | 18789 |
-| `tg_discuss_bot` | Kimi AI chat bot (@franscryptoinlog_bot) | — |
-| `tg_coordinator_bot` | Elke 30min marktrapport naar Telegram | — |
-| `command_center` | Beveiligde webinterface (Telegram OTP auth) | 4000 |
-| `jojo_analytics` | TA indicators + DB queries service | 8097 |
-| `kimi_pattern_agent` | Nachtelijke patroonanalyse (03:00 dagelijks) | 8098 |
-| `market_oracle_sandbox` | Publieke RSS + Yahoo Finance (geen API keys) | 8095 |
-| `dashboard` | Nginx web dashboard | 3000 |
-| `openclaw` / `openclaw_runtime` | OpenClaw framework runtime | — |
-| `mcp_server` | MCP server voor Claude Web (staat uit) | 8100 |
-| `cloudflare_tunnel` | HTTPS voor MCP (staat uit) | — |
+[![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110-green?logo=fastapi)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql)](https://postgresql.org)
+[![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)](https://docker.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![Status: Paper Trading](https://img.shields.io/badge/Status-Paper%20Trading-orange)]()
 
 ---
 
-## OpenClaw — Het Masterframework
+## What is this?
 
-**OpenClaw is de ruggengraat van het hele platform.** Het is het agent-runtime framework waarop Jojo1 draait — niet slechts een "gateway", maar het brein dat alle platform-componenten coördineert.
+OpenClaw Apex is a full-stack **algorithmic crypto trading research platform** that:
 
-### Wat is OpenClaw?
-
-OpenClaw is een TypeScript-gebaseerd operator OS voor autonome AI agents. Het combineert:
-- **Claude Sonnet 4.6** als taalmodel (Jojo's intelligentie)
-- **Telegram interface** als primair communicatiekanaal
-- **Tool systeem** — Python scripts die Jojo kan aanroepen (indicator_engine, control_api, sniper, etc.)
-- **Skill systeem** — complexe workflows als herbruikbare "skills"
-- **Multi-agent coördinatie** — Jojo kan sub-agents aansturen (Research Agent, Risk Agent)
-- **Persistent memory** — Jojo onthoudt context over sessies heen
-- **Collab systeem** — gestructureerde communicatie tussen Jojo en Dev via inbox bestanden
-
-### Jojo1 als AI Operator
-
-Jojo1 (draait in `openclaw_gateway`) is **geen simpele chatbot**. Het is een autonome operator die:
-
-1. **Marktdata opvraagt** via tool_intelligence.py → indicator_engine
-2. **Config wijzigt** via proposals → control_api → apex_engine
-3. **Snipers instelt** via tool_sniper.py → indicator_engine
-4. **Trading beheert** via trading_halt.json, skip_coins, max_positions
-5. **Analyses maakt** via Research Agent + Risk Agent sub-workflows
-6. **Rapporteert** naar Frans via Telegram
-
-### OpenClaw Architectuur
-
-```
-Frans (Telegram)
-     │
-     ▼
-openclaw_gateway (OpenClaw runtime — TypeScript)
-     │
-     ├── Claude Sonnet 4.6 (Jojo's taalmodel)
-     │
-     ├── Tools:
-     │    ├── tool_intelligence.py → indicator_engine:8099
-     │    ├── tool_sniper.py       → indicator_engine:8099
-     │    ├── tool_market.py       → market_oracle:8095
-     │    └── tool_analytics.py   → jojo_analytics:8097
-     │
-     ├── Control:
-     │    └── proposals → control_api:8080 → apex_engine config
-     │
-     └── Collab:
-          └── /workspace/collab/inbox/ ↔ Dev (Claude Code)
-```
-
-### Waarom OpenClaw de "master" is
-
-Zonder OpenClaw is het platform een verzameling losse microservices. OpenClaw maakt het tot een **autonoom systeem**:
-- Alle beslissingen gaan via Jojo1 (OpenClaw)
-- Jojo coördineert wanneer welke service wordt aangesproken
-- Jojo interpreteert marktdata en zet het om in acties
-- Jojo communiceert met Frans en Dev als enige centrale operator
+1. **Scores every (coin × signal) setup** using 4 years of 1h OHLCV history — P1 scoring system with STERK / TOESTAAN / TOESTAAN_ZWAK / SKIP verdicts
+2. **Detects live signals** in real-time — RSI, MACD, ADX, EMA regime, Bollinger Bands per coin
+3. **Runs a paper trading testbot** — buys only `STERK` setups, tracks TP/SL/TIMEOUT outcomes
+4. **Visualises everything** — interactive candlestick charts with historical setup markers and bot trade markers overlaid
+5. **AI operator (Jojo1)** — Claude Sonnet 4.6 runs as a Telegram bot, interprets market conditions and controls the platform
 
 ---
 
-## Features
+## Screenshots / Pages
 
-### Trading Filters (apex_engine)
-1. **Trading halt** — hardcoded stop via `trading_halt.json`
-2. **Skip coins** — configureerbaar via proposals
-3. **BTC EMA200 filter (4h)** — geen longs als BTC bearish op 4h
-4. **BTC EMA21/55 filter (1h)** — geen altcoin longs in bear market
-5. **Pre-crash score** — geblokkeerd bij score >= 60/100
-6. **RSI filter** — RSI < drempel (default 30)
-7. **RSI chop zone** — geen BUY in RSI 30-55 neutrale zone
-8. **Signal blacklist** — automatisch op basis van historische PnL
-9. **Pattern engine** — 1h + 4h bevestiging vereist
-10. **Max posities** — default 4 gelijktijdige posities
-
-### Indicator Engine (40 coins, 4 jaar data)
-- RSI, MACD, EMA21/55/200, Bollinger Bands, ADX, StochRSI, ATR
-- Historische patroon matching + win rates
-- Backtest op 4 jaar data
-- **Reverse backtest**: vindt pre-crash fingerprints
-- **Sniper Bot**: wacht op perfecte entry condities
-
-### Sniper Bot
-```
-/sniper dip BTC [rsi=28]           -- wacht op dip entry
-/sniper short ETH [rsi=68]         -- wacht op short entry
-/sniper niveau BTC target=80000    -- prijs alert
-/sniper breakout SOL               -- breakout conditie
-/sniper list / cancel <id>
-/sniper reverse BTC [threshold=-5] -- crash analyse
-```
-
-### MCP Server (Claude Web toegang)
-Wanneer Jojo geen credits heeft, kan Claude Web alsnog alle data raadplegen:
-```bash
-docker compose up -d mcp_server cloudflare_tunnel
-docker logs ...-cloudflare_tunnel-1 | grep trycloudflare  # HTTPS URL
-```
-Token: zie `secrets/mcp_server.env`
+| Page | What you see |
+|------|-------------|
+| **⚡ Live Signals** | Real-time RSI/MACD/ADX per coin, active signal type, P1 verdict, auto-refresh every 60s |
+| **📊 Setup Intelligence** | Historical quality of each (coin × signal) setup, last signal timestamp, plain-language interpretation |
+| **📈 Chart** | Candlestick + EMAs + 3 marker types: Setup Intel moments, bot buy entries, bot exit (TP/SL/TIMEOUT) |
+| **🤖 Bot Positions** | Open paper trades with live Binance price, TP/SL progress bar, slot counter, recent closed trades |
+| **📉 STERK Quality** | Closed paper trade analysis — cumulative PnL chart, daily breakdown, CSV export, plain-language summary |
 
 ---
 
-## Quick Start
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Docker Compose (VPS — 4 CPU / 8GB RAM)       │
+│                                                                  │
+│  command_center  :4000  ←── Nginx SPA  (5 dashboard pages)      │
+│  control_api     :8080  ←── FastAPI    (30+ endpoints, testbot) │
+│  postgres        :5432  ←── PostgreSQL 16  (17 tables)          │
+│  jojo_analytics  :8097  ←── SQL query service for indicators     │
+│  indicator_engine:8099  ←── OHLCV import + TA + signal detect   │
+│  openclaw_gateway       ←── Jojo1 AI   (Claude Sonnet 4.6)      │
+│  tg_coordinator_bot     ←── Telegram 30-min market reports      │
+│  tg_discuss_bot         ←── Kimi AI interactive chat bot        │
+│  apex_engine            ←── Trading engine (signals, orders)    │
+│  kimi_pattern_agent     ←── Nightly pattern analysis (03:00)    │
+│  market_oracle_sandbox  ←── RSS + Yahoo Finance macro feed      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## P1 Setup Scoring System
+
+The **setup judge** scores every `(coin × signal_type)` combination using all available history:
+
+```
+Score (0–100):
+  Win rate   0–40 pts  ← % of trades profitable after 1h
+  Avg PnL    0–30 pts  ← mean 1h return across all occurrences
+  Sample size 0–15 pts ← min 10 trades required, bonus at n ≥ 100
+  Regime     0–15 pts  ← bonus if signal performs better in current BTC regime
+
+Verdict thresholds:
+  STERK         score ≥ 70  AND  win% ≥ 55%  AND  avg_pnl ≥ 0.20%  AND  n ≥ 20
+  TOESTAAN      score ≥ 50
+  TOESTAAN_ZWAK score ≥ 30
+  SKIP          below thresholds or negative edge
+```
+
+Example output (DOGE / BREAKOUT_BULL):
+```
+score=78  win%=83.3  avg_1h=+0.785%  n=30 → STERK
+```
+
+---
+
+## Signal Types Detected
+
+| Signal | Trigger conditions |
+|--------|--------------------|
+| `BREAKOUT_BULL` | Price > upper Bollinger Band + RSI > 50 + volume > 1.5× avg |
+| `MOMENTUM` | EMA21 > EMA55 > EMA200 + RSI 50–65 + MACD bullish + ADX > 25 |
+| `BUY` | RSI < 32 + MACD turning up, or StochRSI oversold (k < 20, k > d) |
+| `PERFECT_DAY` | All of the above simultaneously |
+
+---
+
+## Paper Trading Testbot
+
+Runs as a background thread inside `control_api`. **No live trading — BloFin demo only.**
+
+| Parameter | Value |
+|-----------|-------|
+| Entry condition | `STERK` verdict only |
+| Stake per trade | $100 USD |
+| Max concurrent trades | 3 |
+| Take Profit | +4.5% |
+| Stop Loss | −2.0% |
+| Max duration | 2 hours (TIMEOUT) |
+| Fee (round-trip) | 0.2% |
+| Live price source | Binance public API |
+| Storage | PostgreSQL `testbot_trades` |
+
+Tracks price snapshots at 15m / 1h / 2h after entry for detailed outcome analysis.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend API | Python 3.11, FastAPI, uvicorn |
+| Database | PostgreSQL 16 (primary) + SQLite (legacy) |
+| DB compat layer | `db/db_compat.py` — `?`→`%s`, `datetime()`→`NOW()` |
+| Charts | TradingView Lightweight Charts v4.1.3 (open-source CDN) |
+| Live prices | Binance public REST API (no key required) |
+| Auth | Telegram OTP login + JWT-style session tokens |
+| AI operator | Claude Sonnet 4.6 (Anthropic API) |
+| Infrastructure | Docker Compose, Nginx, Cloudflare tunnel |
+| Exchange | BloFin Demo (paper trading only) |
+
+---
+
+## Database Tables (PostgreSQL)
+
+```sql
+ohlcv_data           -- 4 years of 1h/4h candles (17 coins)
+indicators_data      -- RSI, MACD hist, EMA21/55/200, ADX, BB, StochRSI per candle
+historical_context   -- signal occurrences + future 1h/4h/24h PnL outcomes
+crash_score_log      -- market crash probability score over time
+testbot_trades       -- paper trade log (entry, exit, TP/SL/TIMEOUT, PnL, fees)
+events               -- audit trail: bot OPEN/CLOSE events with full payload
+signal_context       -- latest live signals from apex_engine
+verdict_log          -- legacy signal verdict log
+```
+
+---
+
+## Key API Endpoints
+
+```http
+# Live dashboard
+GET  /live/signals                   current indicators + signal + P1 verdict per coin
+
+# Setup intelligence
+GET  /setup/scan                     P1 score all coins × signals in one bulk query
+GET  /setup/chart-markers/{symbol}   STERK/TOESTAAN historical markers (chart overlay)
+
+# Testbot
+GET  /testbot/status                 bot running state + config + all-time stats
+GET  /testbot/positions              open positions with live Binance price + current PnL
+GET  /testbot/history?limit=100      closed trades with 15m/1h/2h/final PnL breakdown
+GET  /testbot/markers/{symbol}       entry/exit timestamps for chart overlay
+POST /testbot/start | /testbot/stop  start or stop the bot
+POST /testbot/open                   manually open a test trade {symbol, signal, score}
+
+# Chart
+GET  /chart/markers/{symbol}         candles + EMAs + crash scores for chart
+```
+
+---
+
+## Project Structure
+
+```
+.
+├── control_api/
+│   └── app/
+│       ├── server.py            # FastAPI app — 30+ endpoints, auth, testbot integration
+│       └── testbot.py           # Paper trading bot — background thread
+├── dashboard/
+│   ├── live_signals.html        # ⚡ Real-time signal overview
+│   ├── setup_intelligence.html  # 📊 Historical setup quality
+│   ├── chart.html               # 📈 Chart with 3 marker types
+│   ├── bot_positions.html       # 🤖 Open paper positions
+│   ├── sterk_quality.html       # 📉 Closed trade analysis
+│   └── index.html               # Dashboard home + navigation
+├── db/
+│   ├── init.sql                 # PostgreSQL schema (17 tables + indices)
+│   └── db_compat.py             # SQLite ↔ PostgreSQL compatibility layer
+├── docs/
+│   ├── SYSTEM_FULL.md           # Full system documentation
+│   ├── P1_SETUP_JUDGE.md        # P1 scoring system
+│   ├── P2_TESTBOT.md            # Paper trading testbot
+│   └── P3_LIVE_DASHBOARD.md     # Live signals + chart markers
+├── secrets/                     # *.env files — NEVER committed
+├── docker-compose.yml
+└── README.md
+```
+
+---
+
+## Setup (development reference)
 
 ```bash
 # 1. Clone
 git clone https://github.com/frans1979valk/openclaw-apex-v2.git
 cd openclaw-apex-v2
 
-# 2. Secrets aanmaken (zie secrets/*.env.example)
-# Vul alle *.env bestanden in met jouw API keys
+# 2. Create secrets
+cp secrets/*.env.example secrets/*.env   # fill in API keys
 
-# 3. Starten
+# 3. Start
 docker compose up -d
 
-# 4. Controleer
-docker compose ps
-curl http://localhost:8080/balance -H "X-API-KEY: <token>"
-curl http://localhost:8099/health
+# 4. Open dashboard
+# https://your-vps-ip:4000
 ```
+
+**Required secrets:** `CONTROL_API_TOKEN`, `TG_BOT_TOKEN_COORDINATOR`, `TG_CHAT_ID`, `DATABASE_URL`
 
 ---
 
-## Config aanpassen (proposals)
+## Security
 
-```bash
-curl -X POST http://localhost:8080/config/propose \
-  -H "X-API-KEY: <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent": "Dev",
-    "params": {
-      "rsi_buy_threshold": 28,
-      "rsi_chop_max": 55,
-      "max_positions": 3,
-      "skip_coins": ["DOTUSDT", "UNIUSDT"]
-    },
-    "reason": "Verbeterde filters"
-  }'
-
-curl -X POST http://localhost:8080/proposals/1/apply \
-  -H "X-API-KEY: <token>"
-```
+- Dashboard protected by **Telegram OTP** — login sends 6-digit code to your Telegram
+- All API endpoints require `X-API-KEY` header
+- Session tokens expire after 24 hours
+- Secrets in `secrets/*.env` — gitignored, never pushed
+- HTTPS via Cloudflare tunnel or self-signed certificate
 
 ---
 
-## Telegram bots
+## Current Status
 
-| Bot | Handle | Functie |
-|-----|--------|---------|
-| Jojo1 | @franstest1_bot | AI operator (Claude) |
-| Kimi Chat | @franscryptoinlog_bot | Marktanalyse + Sniper |
-
-**Kimi Chat commando's:**
-```
-/status        -- marktoverzicht
-/balance       -- demo balans
-/patroon BTC   -- historische patroonanalyse
-/signal ETH 4h -- indicator signaal
-/backtest BTC  -- strategie backtest
-/sniper dip BTC -- sniper instellen
-/stop / /start -- trading beheer
-```
-
----
-
-## 40 Gevolgde Coins
-
-**Origineel (17):** BTC, ETH, SOL, AAVE, AVAX, LINK, DOT, UNI, LTC, DOGE, XRP, BNB, ADA, ATOM, ARB, APT, SEI
-
-**Nieuw toegevoegd (23):** SUI, TRX, NEAR, BCH, ICP, HBAR, PEPE, WIF, WLD, ENA, TAO, ZEC, OP, XLM, SHIB, FET, BONK, FLOKI, RENDER, INJ, TIA, ALGO, VET
-
----
-
-## Secrets
-
-Alle secrets in `secrets/*.env` — **nooit in git**.
-
-| Bestand | Inhoud |
+| Feature | Status |
 |---------|--------|
-| `apex.env` | BloFin API + Kimi key (apex_engine agents) |
-| `postgres.env` | DATABASE_URL + POSTGRES_PASSWORD |
-| `openclaw_gateway.env` | ANTHROPIC_API_KEY voor Jojo1 |
-| `telegram_discuss.env` | Kimi bot token + KIMI_API_KEY |
-| `mcp_server.env` | MCP_AUTH_TOKEN |
+| P1 setup scoring engine | ✅ Live |
+| Live signals dashboard | ✅ Live |
+| Interactive charts + markers | ✅ Live |
+| Paper trading testbot | ✅ Running (test phase) |
+| Setup Intelligence page | ✅ Live |
+| Cumulative PnL analysis | ✅ Live |
+| Telegram trade alerts | 🔧 Planned |
+| Short signals | 🔧 Planned |
+| Real money trading | ❌ Not enabled — paper only |
 
 ---
 
-## Veiligheidsregels
+## License
 
-- `TRADING_MODE=demo` en `ALLOW_LIVE=false` zijn hardcoded
-- PARAM_BOUNDS gehandhaafd door control_api
-- Max 3 config wijzigingen per dag
-- Max dagverlies 5% automatische pauze
-- Jojo1 kan nooit live trading inschakelen
+MIT — free to use, study and build upon. Not financial advice. Paper trading only.
 
 ---
 
-## Documentatie
-
-- [docs/PLATFORM_INFO.md](docs/PLATFORM_INFO.md) — volledige technische documentatie
-- [docs/SYSTEM_FULL.md](docs/SYSTEM_FULL.md) — uitgebreide systeemdocumentatie
-- [docs/INDICATOR_ENGINE.md](docs/INDICATOR_ENGINE.md) — indicator engine details
-
----
-
-*Stack: Python 3.12, FastAPI, PostgreSQL 16, TA-Lib, Docker Compose, Claude Sonnet 4.6, Kimi moonshot-v1-32k, FastMCP 3.1*
+*Built with Claude Code + Anthropic API. AI operator Jojo1 runs on Claude Sonnet 4.6.*
