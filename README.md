@@ -13,13 +13,60 @@
 
 ## What is this?
 
-OpenClaw Apex is a full-stack **algorithmic crypto trading research platform** that:
+OpenClaw Apex is a full-stack **algorithmic crypto trading platform** with an autonomous AI operator at its core.
 
 1. **Scores every (coin × signal) setup** using 4 years of 1h OHLCV history — P1 scoring system with STERK / TOESTAAN / TOESTAAN_ZWAK / SKIP verdicts
 2. **Detects live signals** in real-time — RSI, MACD, ADX, EMA regime, Bollinger Bands per coin
 3. **Runs a paper trading testbot** — buys only `STERK` setups, tracks TP/SL/TIMEOUT outcomes
 4. **Visualises everything** — interactive candlestick charts with historical setup markers and bot trade markers overlaid
 5. **AI operator (Jojo1)** — Claude Sonnet 4.6 runs as a Telegram bot, interprets market conditions and controls the platform
+
+---
+
+## Jojo1 — The AI Operator
+
+**Jojo1 is the brain of the platform.** It is not a chatbot — it is an autonomous operator that runs 24/7 inside the `openclaw_gateway` container, powered by Claude Sonnet 4.6 (Anthropic).
+
+Jojo1 has full access to all platform data and uses it independently:
+
+| What Jojo1 does | How |
+|-----------------|-----|
+| Reads live signals + indicator values | Queries `indicator_engine` and `control_api` |
+| Analyzes 4 years of historical patterns | Uses `jojo_analytics` + `historical_context` database |
+| Evaluates setup quality (P1 scores) | Reads STERK/TOESTAAN verdicts per coin × signal |
+| Monitors market conditions (macro) | Uses `market_oracle_sandbox` (RSS + Yahoo Finance) |
+| Pauses trading when danger signals appear | Auto-pause on high crash score — no human needed |
+| Proposes parameter changes | Submits proposals via the Gatekeeper API |
+| Sends market reports every 30 minutes | Via `tg_coordinator_bot` to Telegram |
+| Responds to questions via Telegram | Owner can ask anything about current market state |
+
+### How the owner interacts
+
+The platform runs **fully autonomously**. The owner only needs to act when they want to:
+
+```
+Owner sends Telegram message to Jojo1:
+  "analyze current market and suggest better stoploss if needed"
+
+Jojo1:
+  1. Reads live signals for all 17 coins
+  2. Checks P1 scores + recent win rates
+  3. Runs a backtest if needed
+  4. Submits a proposal: "change stoploss from 2.0% to 2.5%"
+  5. Sends OTP to Telegram: "Confirm with /ok abc123"
+
+Owner replies: /ok abc123
+  → Parameter applied, trading continues
+```
+
+### Safety: the Gatekeeper
+
+Jojo1 cannot do anything dangerous on its own. Every action goes through the **Gatekeeper**:
+
+- All parameter changes require **OTP confirmation** from the owner via Telegram
+- Trading can only be paused/resumed — Jojo1 cannot open positions directly
+- `ALLOW_LIVE` can never be set by Jojo1 — hardcoded block
+- All actions are logged in the audit trail
 
 ---
 
