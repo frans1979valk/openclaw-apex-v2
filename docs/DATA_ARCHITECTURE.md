@@ -554,4 +554,65 @@ python3 coin_watcher.py --enrich          # trigger enrichment
 
 ---
 
+---
+
+## 11. AI-vrije Kernarchitectuur
+
+De datafundering is nu sterk genoeg om de trading intelligence **primair statistisch en regelgedreven** te maken. Externe AI hoeft niet in de realtime beslisloop en kan beperkt blijven tot rapportage, research en samenvatting.
+
+### Principe
+
+```
+REALTIME BESLISLOOP (geen AI)          AI LAAG (asynchroon)
+─────────────────────────────          ────────────────────
+indicators_data                        Jojo1 (OpenClaw)
+      ↓                                  → marktanalyse
+historical_context                       → samenvatting
+      ↓                                  → uitleg aan Frans
+setup_judge (pure SQL)                 Kimi2 (nachtanalyse)
+      ↓                                  → regime advies
+apex_engine filter                       → strategie bias
+      ↓                                Geen van beide
+trading beslissing                       heeft directe controle
+                                         over orders
+```
+
+### Wat de statistiek overneemt
+
+| Beslissing | Hoe | AI nodig? |
+|---|---|---|
+| Is deze setup historisch winstgevend? | historical_context aggregaat (31k records) | Nee |
+| Welke coins presteren het slechtst? | signal_analyzer per coin | Nee |
+| Is de markt trending of ranging? | ADX drempel + EMA alignment | Nee |
+| Is BTC in bull of bear regime? | EMA200 check (indicatoren_data) | Nee |
+| Welke signalen zijn blacklist-kandidaat? | PnL < drempel + min n | Nee |
+| Wanneer is een coin SKIP? | setup_judge — 3 niveaus | Nee |
+
+### Wat AI wél doet
+
+| Taak | AI | Frequentie |
+|---|---|---|
+| Marktrapport naar Frans | tg_coordinator_bot (Kimi) | Elke 30 min |
+| Nachtanalyse regime + strategie | kimi_pattern_agent | 03:00 dagelijks |
+| Marktuitleg op verzoek | tg_discuss_bot (Kimi) | Op aanvraag |
+| Jojo1 operator beslissingen | openclaw_gateway (Claude) | Op events |
+| Research bij bijzondere events | Jojo1 Research Agent | Op aanvraag |
+
+### Gevolg voor systeemkosten
+
+Alle realtime filtering draait op eigen hardware, zonder API-calls:
+- `setup_judge` → pure SQL op PostgreSQL
+- `signal_analyzer` → pure SQL aggregaties
+- `context_collector` → REST call naar interne service (jojo_analytics)
+- `coin_watcher` → REST call naar interne service (indicator_engine)
+
+AI-kosten (Anthropic credits) worden alleen gemaakt bij:
+1. Jojo1 reageert op Telegram bericht van Frans
+2. Jojo1 voert een actieve analyse uit (Research/Risk Agent)
+3. Kimi2 nachtrapport (Moonshot API, goedkoper)
+
+**Conclusie:** het platform kan technisch blijven draaien zonder AI-credits. AI verbetert de kwaliteit van beslissingen en communicatie, maar de kernbescherming (filters, skip-regels, blacklist) is volledig statistisch en regelgedreven.
+
+---
+
 *Gegenereerd: 2026-03-07 | Basis: live database queries op PostgreSQL + SQLite apex.db*
