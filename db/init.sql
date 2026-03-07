@@ -234,6 +234,39 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Indices voor performance
 -- ══════════════════════════════════════════════════════════════════════════════
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- TestBot paper trading
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS testbot_trades (
+    id          SERIAL PRIMARY KEY,
+    symbol      TEXT NOT NULL,
+    signal      TEXT,
+    setup_score INTEGER,
+    entry_price NUMERIC(20,8) NOT NULL,
+    entry_ts    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    stake_usd   NUMERIC(10,2) DEFAULT 100.0,
+    tp_pct      NUMERIC(6,3)  DEFAULT 4.5,
+    sl_pct      NUMERIC(6,3)  DEFAULT 2.0,
+    tp_price    NUMERIC(20,8),
+    sl_price    NUMERIC(20,8),
+    price_15m   NUMERIC(20,8),
+    price_1h    NUMERIC(20,8),
+    price_2h    NUMERIC(20,8),
+    close_price NUMERIC(20,8),
+    close_ts    TIMESTAMPTZ,
+    close_reason TEXT,
+    pnl_pct     NUMERIC(10,4),
+    pnl_usd     NUMERIC(10,4),
+    fee_usd     NUMERIC(10,4),
+    net_pnl_usd NUMERIC(10,4),
+    status      TEXT NOT NULL DEFAULT 'open'
+);
+
+CREATE INDEX IF NOT EXISTS idx_testbot_status ON testbot_trades(status);
+CREATE INDEX IF NOT EXISTS idx_testbot_symbol ON testbot_trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_testbot_ts     ON testbot_trades(entry_ts);
+
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);

@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Setup Intelligence — OpenClaw Apex</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
+
+  header {
+    background: #161b22; padding: 14px 24px;
+    border-bottom: 1px solid #30363d;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 1.2rem; }
+  .nav-back {
+    font-size: .8rem; color: #58a6ff; text-decoration: none;
+    border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px;
+    margin-left: auto;
+  }
+  .nav-back:hover { border-color: #58a6ff; }
+  #logout-btn {
+    font-size: .75rem; color: #8b949e; background: none;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; margin-left: 8px;
+  }
+  #logout-btn:hover { color: #f85149; border-color: #f85149; }
+
+  /* Market status bar */
+  #market-bar {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    padding: 14px 24px; background: #161b22;
+    border-bottom: 1px solid #30363d; align-items: center;
+  }
+  .mbar-item {
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; padding: 8px 14px;
+    text-align: center; min-width: 90px;
+  }
+  .mbar-val { font-size: 1.1rem; font-weight: 700; }
+  .mbar-lbl { font-size: .65rem; color: #8b949e; margin-top: 2px; }
+  .regime-bull { color: #3fb950; }
+  .regime-bear { color: #f85149; }
+  .regime-onbekend { color: #8b949e; }
+  .cnt-sterk { color: #3fb950; }
+  .cnt-toestaan { color: #58a6ff; }
+  .cnt-zwak { color: #d29922; }
+  .cnt-skip { color: #f85149; }
+
+  /* Controls */
+  #controls {
+    padding: 12px 24px;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    border-bottom: 1px solid #21262d;
+  }
+  .filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .filter-btn {
+    background: #21262d; color: #8b949e;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 4px 12px; cursor: pointer; font-size: .78rem;
+    transition: all .15s;
+  }
+  .filter-btn:hover { background: #2d333b; color: #c9d1d9; }
+  .filter-btn.active { color: #e6edf3; border-color: #58a6ff; }
+  .filter-btn.v-sterk.active   { background: #1a2d1a; border-color: #3fb950; color: #3fb950; }
+  .filter-btn.v-toestaan.active{ background: #0d1f35; border-color: #58a6ff; color: #58a6ff; }
+  .filter-btn.v-zwak.active    { background: #2a2000; border-color: #d29922; color: #d29922; }
+  .filter-btn.v-skip.active    { background: #2a0d0d; border-color: #f85149; color: #f85149; }
+  #search-box {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    color: #e6edf3; padding: 4px 10px; font-size: .8rem; width: 120px;
+  }
+  #search-box:focus { outline: none; border-color: #58a6ff; }
+  .sort-lbl { font-size: .75rem; color: #8b949e; }
+  select.sort-select {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    color: #e6edf3; padding: 4px 8px; font-size: .78rem; cursor: pointer;
+  }
+  #ts-label { font-size: .7rem; color: #8b949e; margin-left: auto; }
+
+  /* Main layout */
+  #main { display: flex; height: calc(100vh - 120px); overflow: hidden; }
+  #table-col { flex: 1; overflow-y: auto; padding: 16px 24px; }
+  #detail-col {
+    width: 360px; min-width: 320px; border-left: 1px solid #30363d;
+    overflow-y: auto; padding: 16px;
+    background: #161b22;
+    display: none;
+  }
+  #detail-col.open { display: block; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  thead th {
+    text-align: left; padding: 8px 10px;
+    color: #8b949e; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    border-bottom: 1px solid #30363d;
+    position: sticky; top: 0; background: #0d1117; z-index: 1;
+    cursor: pointer; user-select: none;
+    white-space: nowrap;
+  }
+  thead th:hover { color: #c9d1d9; }
+  thead th.sorted { color: #58a6ff; }
+  tbody tr {
+    border-bottom: 1px solid #21262d;
+    cursor: pointer; transition: background .1s;
+  }
+  tbody tr:hover { background: #1c2128; }
+  tbody tr.selected { background: #0d1f35 !important; }
+  td { padding: 7px 10px; vertical-align: middle; }
+  .sym-cell { font-weight: 700; font-size: .88rem; }
+  .sig-cell { font-size: .72rem; color: #8b949e; }
+
+  /* Score bar */
+  .score-wrap { display: flex; align-items: center; gap: 6px; }
+  .score-bar-bg {
+    width: 60px; height: 5px; background: #21262d;
+    border-radius: 3px; overflow: hidden; flex-shrink: 0;
+  }
+  .score-bar-fill { height: 5px; border-radius: 3px; transition: width .4s; }
+  .score-num { font-weight: 700; font-size: .85rem; min-width: 28px; }
+
+  /* Verdict badge */
+  .vbadge {
+    display: inline-block; font-size: .68rem; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; white-space: nowrap;
+  }
+  .vb-sterk      { background: #1a2d1a; color: #3fb950; border: 1px solid #3fb950; }
+  .vb-toestaan   { background: #0d1f35; color: #58a6ff; border: 1px solid #58a6ff; }
+  .vb-zwak       { background: #2a2000; color: #d29922; border: 1px solid #d29922; }
+  .vb-skip       { background: #2a0d0d; color: #f85149; border: 1px solid #f85149; }
+  .vb-onbekend   { background: #1c2128; color: #8b949e; border: 1px solid #30363d; }
+
+  /* Edge / regime / bias chips */
+  .chip {
+    display: inline-block; font-size: .65rem; padding: 1px 6px;
+    border-radius: 3px; white-space: nowrap;
+  }
+  .chip-sterk   { background: #1a2d1a; color: #3fb950; }
+  .chip-midden  { background: #1a2a1f; color: #56d364; }
+  .chip-zwak    { background: #2a2000; color: #d29922; }
+  .chip-negatief{ background: #2a0d0d; color: #f85149; }
+  .chip-neutraal{ background: #1c2128; color: #8b949e; }
+  .chip-voordeel{ background: #0d1f35; color: #58a6ff; }
+  .chip-nadeel  { background: #2a0d0d; color: #f85149; }
+  .chip-geen    { background: #1c2128; color: #484f58; }
+
+  .pnl-pos { color: #3fb950; font-weight: 600; }
+  .pnl-neg { color: #f85149; font-weight: 600; }
+  .pnl-neu { color: #8b949e; }
+  .n-cell  { color: #8b949e; font-size: .78rem; }
+
+  /* Spinner */
+  .spinner {
+    width: 32px; height: 32px; margin: 40px auto;
+    border: 3px solid #30363d; border-top-color: #58a6ff;
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Detail panel */
+  #detail-col h2 { font-size: .9rem; margin-bottom: 14px; color: #c9d1d9; }
+  .detail-section {
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; padding: 12px; margin-bottom: 10px;
+  }
+  .detail-section h3 {
+    font-size: .72rem; color: #8b949e; text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 8px;
+  }
+  .detail-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; font-size: .78rem; border-bottom: 1px solid #21262d;
+  }
+  .detail-row:last-child { border: none; }
+  .detail-lbl { color: #8b949e; }
+  .detail-val { font-weight: 600; }
+  .regime-bar {
+    display: flex; gap: 8px; margin-top: 8px;
+  }
+  .regime-half {
+    flex: 1; background: #161b22; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px; text-align: center;
+  }
+  .regime-half .rh-val { font-size: 1rem; font-weight: 700; }
+  .regime-half .rh-lbl { font-size: .65rem; color: #8b949e; margin-top: 2px; }
+  .verdict-big {
+    font-size: 1.4rem; font-weight: 800; letter-spacing: .05em;
+    padding: 10px; text-align: center; border-radius: 8px; margin-bottom: 12px;
+  }
+  /* Interpretatie blokken */
+  .interp-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px; margin-bottom: 12px;
+  }
+  .interp-block {
+    border-radius: 8px; padding: 10px 12px;
+  }
+  .interp-block-title {
+    font-size: .65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; margin-bottom: 5px; display: flex;
+    align-items: center; gap: 5px;
+  }
+  .interp-icon {
+    width: 14px; height: 14px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: .6rem; font-weight: 900; flex-shrink: 0;
+  }
+  .interp-block-tekst {
+    font-size: .76rem; color: #c9d1d9; line-height: 1.55;
+  }
+  .interp-groen { background: #0d2318; border: 1px solid #3fb950; }
+  .interp-geel  { background: #1f1a00; border: 1px solid #d29922; }
+  .interp-rood  { background: #1f0d0d; border: 1px solid #f85149; }
+  .interp-grijs { background: #161b22; border: 1px solid #30363d; }
+  .interp-groen .interp-block-title { color: #3fb950; }
+  .interp-geel  .interp-block-title { color: #d29922; }
+  .interp-rood  .interp-block-title { color: #f85149; }
+  .interp-grijs .interp-block-title { color: #8b949e; }
+  .interp-groen .interp-icon { background: #3fb950; color: #000; }
+  .interp-geel  .interp-icon { background: #d29922; color: #000; }
+  .interp-rood  .interp-icon { background: #f85149; color: #fff; }
+  .interp-grijs .interp-icon { background: #30363d; color: #8b949e; }
+
+  /* Verdict compact (onder blokken) */
+  .verdict-strip {
+    display: flex; align-items: center; gap: 10px;
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
+  }
+  .verdict-strip-score {
+    font-size: .75rem; color: #8b949e; margin-left: auto;
+  }
+  #detail-close {
+    float: right; background: none; border: none; color: #8b949e;
+    cursor: pointer; font-size: 1.1rem; line-height: 1;
+  }
+  #detail-close:hover { color: #f85149; }
+</style>
+</head>
+<body>
+
+<header>
+  <span>&#128202;</span>
+  <h1>Setup Intelligence</h1>
+  <a class="nav-back" href="index.html">&#8592; Dashboard</a>
+  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+</header>
+
+<div id="market-bar">
+  <div class="mbar-item">
+    <div class="mbar-val" id="mb-regime">---</div>
+    <div class="mbar-lbl">BTC Regime</div>
+  </div>
+  <div class="mbar-item">
+    <div class="mbar-val cnt-sterk" id="mb-sterk">-</div>
+    <div class="mbar-lbl">STERK</div>
+  </div>
+  <div class="mbar-item">
+    <div class="mbar-val cnt-toestaan" id="mb-toestaan">-</div>
+    <div class="mbar-lbl">TOESTAAN</div>
+  </div>
+  <div class="mbar-item">
+    <div class="mbar-val cnt-zwak" id="mb-zwak">-</div>
+    <div class="mbar-lbl">TOESTAAN ZWAK</div>
+  </div>
+  <div class="mbar-item">
+    <div class="mbar-val cnt-skip" id="mb-skip">-</div>
+    <div class="mbar-lbl">SKIP</div>
+  </div>
+  <div id="ts-label">laden...</div>
+</div>
+
+<div id="controls">
+  <div class="filter-group">
+    <span style="font-size:.75rem;color:#8b949e">Filter:</span>
+    <button class="filter-btn active" onclick="setVerdictFilter('', this)">Alles</button>
+    <button class="filter-btn v-sterk"    onclick="setVerdictFilter('STERK', this)">STERK</button>
+    <button class="filter-btn v-toestaan" onclick="setVerdictFilter('TOESTAAN', this)">TOESTAAN</button>
+    <button class="filter-btn v-zwak"     onclick="setVerdictFilter('TOESTAAN_ZWAK', this)">TOESTAAN ZWAK</button>
+    <button class="filter-btn v-skip"     onclick="setVerdictFilter('SKIP', this)">SKIP</button>
+  </div>
+  <input id="search-box" type="text" placeholder="Zoek coin..." oninput="renderTable()"/>
+  <span class="sort-lbl">Sorteer:</span>
+  <select class="sort-select" onchange="setSortField(this.value)">
+    <option value="setup_score">Score</option>
+    <option value="win_pct_1h">Win%</option>
+    <option value="avg_1h">Gem. P&amp;L 1h</option>
+    <option value="n">Aantal (n)</option>
+  </select>
+</div>
+
+<div id="main">
+  <div id="table-col">
+    <div class="spinner" id="spinner"></div>
+    <table id="setup-table" style="display:none">
+      <thead>
+        <tr>
+          <th onclick="setSortField('symbol')">Coin</th>
+          <th onclick="setSortField('signal')">Signaal</th>
+          <th onclick="setSortField('setup_score')">Score</th>
+          <th onclick="setSortField('')">Verdict</th>
+          <th onclick="setSortField('edge_strength')">Edge</th>
+          <th onclick="setSortField('regime_fit')">Regime</th>
+          <th onclick="setSortField('win_pct_1h')">Win%</th>
+          <th onclick="setSortField('avg_1h')">P&amp;L 1h</th>
+          <th onclick="setSortField('avg_4h')">P&amp;L 4h</th>
+          <th onclick="setSortField('n')">n</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+    <p id="no-results" style="display:none;color:#8b949e;font-size:.85rem;margin-top:20px">Geen setups gevonden voor dit filter.</p>
+  </div>
+
+  <div id="detail-col">
+    <button id="detail-close" onclick="closeDetail()" title="Sluiten">&#10005;</button>
+    <div id="detail-content"></div>
+  </div>
+</div>
+
+<script>
+const API = ``;
+const TOKEN = localStorage.getItem("oc_token") || "";
+const H = {"X-API-KEY": TOKEN};
+
+// Sessie check
+(function() {
+  const token = localStorage.getItem("oc_token");
+  const exp   = localStorage.getItem("oc_expires");
+  if (!token || !exp || new Date(exp) <= new Date()) {
+    localStorage.removeItem("oc_token");
+    window.location.href = "login.html";
+  }
+})();
+
+let _allSetups   = [];
+let _btcRegime   = "onbekend";
+let _verdictFilter = "";
+let _sortField   = "setup_score";
+let _sortAsc     = false;
+let _selectedIdx = null;
+
+function logout() {
+  localStorage.removeItem("oc_token");
+  localStorage.removeItem("oc_expires");
+  localStorage.removeItem("oc_email");
+  window.location.href = "login.html";
+}
+
+function setVerdictFilter(v, btn) {
+  _verdictFilter = v;
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderTable();
+}
+
+function setSortField(f) {
+  if (_sortField === f) { _sortAsc = !_sortAsc; }
+  else { _sortField = f; _sortAsc = f === "symbol" || f === "signal"; }
+  document.querySelectorAll("thead th").forEach(th => th.classList.remove("sorted"));
+  renderTable();
+}
+
+// ── Score kleur ───────────────────────────────────────────────────────────────
+function scoreColor(s) {
+  if (s >= 70) return "#3fb950";
+  if (s >= 50) return "#58a6ff";
+  if (s >= 30) return "#d29922";
+  return "#f85149";
+}
+
+// ── Verdict badge ─────────────────────────────────────────────────────────────
+function verdictBadge(v) {
+  const map = {
+    "STERK":         ["vb-sterk",    "STERK"],
+    "TOESTAAN":      ["vb-toestaan", "TOESTAAN"],
+    "TOESTAAN_ZWAK": ["vb-zwak",     "ZWAK"],
+    "SKIP":          ["vb-skip",     "SKIP"],
+    "ONBEKEND":      ["vb-onbekend", "?"],
+  };
+  const [cls, lbl] = map[v] || ["vb-onbekend", v];
+  return `<span class="vbadge ${cls}">${lbl}</span>`;
+}
+
+// ── Edge/regime chip ──────────────────────────────────────────────────────────
+function edgeChip(e) {
+  const map = {
+    "sterk":    "chip-sterk",
+    "midden":   "chip-midden",
+    "zwak":     "chip-zwak",
+    "negatief": "chip-negatief",
+    "geen":     "chip-geen",
+  };
+  return `<span class="chip ${map[e] || 'chip-neutraal'}">${e}</span>`;
+}
+
+function regimeChip(r) {
+  if (!r) return `<span class="chip chip-geen">—</span>`;
+  if (r.includes("voordeel")) return `<span class="chip chip-voordeel">${r}</span>`;
+  if (r.includes("nadeel"))   return `<span class="chip chip-nadeel">${r}</span>`;
+  if (r === "onbekend" || r === "onvoldoende_data") return `<span class="chip chip-geen">${r}</span>`;
+  return `<span class="chip chip-neutraal">${r}</span>`;
+}
+
+// ── PnL formatter ─────────────────────────────────────────────────────────────
+function pnlFmt(v) {
+  if (v == null) return `<span class="pnl-neu">—</span>`;
+  const s = v >= 0 ? "+" : "";
+  const cls = v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "pnl-neu";
+  return `<span class="${cls}">${s}${v.toFixed(3)}%</span>`;
+}
+function winFmt(v) {
+  if (v == null) return `<span class="pnl-neu">—</span>`;
+  const cls = v >= 55 ? "pnl-pos" : v >= 45 ? "" : v >= 35 ? "pnl-neu" : "pnl-neg";
+  return `<span class="${cls || 'pnl-neu'}">${v.toFixed(1)}%</span>`;
+}
+
+// ── Render tabel ──────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById("table-body");
+  const search = (document.getElementById("search-box").value || "").toUpperCase();
+
+  let rows = _allSetups.filter(s => {
+    if (_verdictFilter && s.verdict !== _verdictFilter) return false;
+    if (search && !s.symbol.includes(search) && !(s.signal||"").includes(search)) return false;
+    return true;
+  });
+
+  // Sorteer
+  rows.sort((a, b) => {
+    let va = a[_sortField], vb = b[_sortField];
+    if (va == null) va = _sortAsc ? "zzz" : -999;
+    if (vb == null) vb = _sortAsc ? "zzz" : -999;
+    if (typeof va === "string") return _sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return _sortAsc ? va - vb : vb - va;
+  });
+
+  const noRes = document.getElementById("no-results");
+  if (!rows.length) {
+    tbody.innerHTML = "";
+    noRes.style.display = "block";
+    return;
+  }
+  noRes.style.display = "none";
+
+  tbody.innerHTML = rows.map((s, i) => {
+    const color = scoreColor(s.setup_score);
+    const isSelected = _selectedIdx === s._origIdx;
+    return `<tr onclick="showDetail(${s._origIdx})" ${isSelected ? 'class="selected"' : ''} data-idx="${s._origIdx}">
+      <td class="sym-cell">
+        ${s.symbol.replace("USDT","")}
+        <a href="chart.html?symbol=${s.symbol}&interval=1h" onclick="event.stopPropagation()"
+           title="Open chart"
+           style="font-size:.6rem;color:#58a6ff;text-decoration:none;margin-left:4px;opacity:.7">&#128200;</a>
+      </td>
+      <td class="sig-cell">${s.signal || "—"}</td>
+      <td>
+        <div class="score-wrap">
+          <div class="score-bar-bg">
+            <div class="score-bar-fill" style="width:${s.setup_score}%;background:${color}"></div>
+          </div>
+          <span class="score-num" style="color:${color}">${s.setup_score}</span>
+        </div>
+      </td>
+      <td>${verdictBadge(s.verdict)}</td>
+      <td>${edgeChip(s.edge_strength)}</td>
+      <td>${regimeChip(s.regime_fit)}</td>
+      <td>${winFmt(s.win_pct_1h)}</td>
+      <td>${pnlFmt(s.avg_1h)}</td>
+      <td>${pnlFmt(s.avg_4h)}</td>
+      <td class="n-cell">${s.n}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function showDetail(origIdx) {
+  _selectedIdx = origIdx;
+  const s = _allSetups[origIdx];
+  if (!s) return;
+
+  // Mark selected row
+  document.querySelectorAll("tbody tr").forEach(tr => {
+    tr.classList.toggle("selected", parseInt(tr.dataset.idx) === origIdx);
+  });
+
+  const regime = _btcRegime;
+  const regimeWin  = regime === "bull" ? s.win_bull  : s.win_bear;
+  const regimeN    = regime === "bull" ? s.n_bull : s.n_bear;
+
+  // Interpretatie blokken genereren
+  const interpHtml = buildInterpretatie(s, regime, regimeWin, regimeN);
+
+  const vcolor = {
+    "STERK":"#3fb950","TOESTAAN":"#58a6ff",
+    "TOESTAAN_ZWAK":"#d29922","SKIP":"#f85149","ONBEKEND":"#8b949e"
+  }[s.verdict] || "#8b949e";
+
+  document.getElementById("detail-content").innerHTML = `
+    <h2>${s.symbol.replace("USDT","")} &mdash; ${s.signal || "?"}
+      <a href="chart.html?symbol=${s.symbol}&interval=1h"
+         style="font-size:.72rem;color:#58a6ff;text-decoration:none;border:1px solid #30363d;border-radius:5px;padding:2px 8px;margin-left:8px;font-weight:400">
+        &#128200; Chart
+      </a>
+    </h2>
+
+    <div class="interp-grid">${interpHtml}</div>
+
+    <div class="verdict-strip">
+      ${verdictBadge(s.verdict)}
+      <span style="font-size:.78rem;color:#c9d1d9">Systeem beoordeling</span>
+      <span class="verdict-strip-score">Score: <b style="color:${vcolor}">${s.setup_score}/100</b></span>
+    </div>
+
+    <div class="detail-section">
+      <h3>Statistieken (alle marktomstandigheden)</h3>
+      <div class="detail-row">
+        <span class="detail-lbl">Aantal historisch (n)</span>
+        <span class="detail-val">${s.n}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-lbl">Win-rate 1h</span>
+        <span class="detail-val">${winFmt(s.win_pct_1h)}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-lbl">Gem. P&amp;L 1h</span>
+        <span class="detail-val">${pnlFmt(s.avg_1h)}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-lbl">Gem. P&amp;L 4h</span>
+        <span class="detail-val">${pnlFmt(s.avg_4h)}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-lbl">Edge strength</span>
+        <span class="detail-val">${edgeChip(s.edge_strength)}</span>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>BTC Regime Analyse</h3>
+      <div class="detail-row">
+        <span class="detail-lbl">Huidig regime</span>
+        <span class="detail-val" style="color:${regime==='bull'?'#3fb950':regime==='bear'?'#f85149':'#8b949e'}">${regime.toUpperCase()}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-lbl">Regime fit</span>
+        <span class="detail-val">${regimeChip(s.regime_fit)}</span>
+      </div>
+      <div class="regime-bar">
+        <div class="regime-half">
+          <div class="rh-val" style="color:#3fb950">${s.win_bull != null ? s.win_bull.toFixed(1)+"%" : "—"}</div>
+          <div class="rh-lbl">Win% (BULL, n=${s.n_bull})</div>
+          <div style="font-size:.72rem;color:${s.avg_1h_bull>=0?'#3fb950':'#f85149'};margin-top:3px">
+            ${s.avg_1h_bull != null ? (s.avg_1h_bull>=0?"+":"")+s.avg_1h_bull.toFixed(3)+"%" : "—"} P&L
+          </div>
+        </div>
+        <div class="regime-half">
+          <div class="rh-val" style="color:#f85149">${s.win_bear != null ? s.win_bear.toFixed(1)+"%" : "—"}</div>
+          <div class="rh-lbl">Win% (BEAR, n=${s.n_bear})</div>
+          <div style="font-size:.72rem;color:${s.avg_1h_bear>=0?'#3fb950':'#f85149'};margin-top:3px">
+            ${s.avg_1h_bear != null ? (s.avg_1h_bear>=0?"+":"")+s.avg_1h_bear.toFixed(3)+"%" : "—"} P&L
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("detail-col").classList.add("open");
+}
+
+function buildInterpretatie(s, regime, regimeWin, regimeN) {
+  const coin = s.symbol.replace("USDT","");
+
+  // ── Blok 1: Kans (winrate) ────────────────────────────────────────────────
+  const win = s.win_pct_1h;
+  let kansTier, kansTxt;
+  if (win == null) {
+    kansTier = "grijs";
+    kansTxt = "Geen historische winrate-data beschikbaar voor deze setup.";
+  } else if (win >= 60) {
+    kansTier = "groen";
+    kansTxt = `Kans hoog: deze setup werkte historisch vaak goed (${win.toFixed(1)}% winrate). Van de ${s.n} gevallen was ruim meer dan de helft winstgevend.`;
+  } else if (win >= 50) {
+    kansTier = "groen";
+    kansTxt = `Kans redelijk: de setup werkte iets vaker wel dan niet (${win.toFixed(1)}% winrate over ${s.n} gevallen). Positief, maar niet uitzonderlijk sterk.`;
+  } else if (win >= 40) {
+    kansTier = "geel";
+    kansTxt = `Kans twijfelachtig: de setup had een winrate van ${win.toFixed(1)}% over ${s.n} gevallen. Minder dan de helft van de trades was winstgevend.`;
+  } else {
+    kansTier = "rood";
+    kansTxt = `Kans laag: slechts ${win.toFixed(1)}% van de ${s.n} historische gevallen was winstgevend. Deze setup verliest statistisch vaker dan hij wint.`;
+  }
+
+  // ── Blok 2: Verwachte beweging (avg pnl) ──────────────────────────────────
+  const pnl = s.avg_1h;
+  let bewegingTier, bewegingTxt;
+  if (pnl == null) {
+    bewegingTier = "grijs";
+    bewegingTxt = "Geen gemiddelde P&L data beschikbaar voor deze setup.";
+  } else if (pnl >= 0.3) {
+    bewegingTier = "groen";
+    bewegingTxt = `Sterke opwaartse beweging: de prijs steeg gemiddeld +${pnl.toFixed(3)}% binnen 1 uur na dit signaal. Dat is een significante beweging.`;
+  } else if (pnl >= 0.05) {
+    bewegingTier = "groen";
+    bewegingTxt = `Positieve beweging: de prijs steeg gemiddeld +${pnl.toFixed(3)}% binnen 1 uur. Klein maar consistent positief resultaat.`;
+  } else if (pnl >= -0.1) {
+    bewegingTier = "geel";
+    bewegingTxt = `Neutrale beweging: de prijs bewoog gemiddeld ${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}% na 1 uur. Nauwelijks netto richting — wisselend resultaat.`;
+  } else {
+    bewegingTier = "rood";
+    bewegingTxt = `Negatieve beweging: de prijs daalde gemiddeld ${pnl.toFixed(3)}% na 1 uur. Dit signaal leidde historisch vaker tot verlies.`;
+  }
+
+  // ── Blok 3: Marktconditie (regime + recent_bias + regime_fit) ─────────────
+  let conditieTier, conditieTxt;
+  const bias = s.recent_bias || null;
+  const regimeFit = s.regime_fit || "";
+  const regimeNaam = regime === "bull" ? "opgaande markt (BULL)"
+                   : regime === "bear" ? "dalende markt (BEAR)" : "onbekend regime";
+  let biasTxt = "";
+  if      (bias === "bullish") biasTxt = " Recent momentum is positief (bullish).";
+  else if (bias === "bearish") biasTxt = " Recent momentum is negatief (bearish).";
+  else if (bias)               biasTxt = ` Recent momentum: ${bias}.`;
+
+  if (regime === "onbekend") {
+    conditieTier = "grijs";
+    conditieTxt = `Het huidige marktregime is onbekend. Geen regime-analyse mogelijk.${biasTxt}`;
+  } else if (regimeFit.includes("voordeel")) {
+    conditieTier = "groen";
+    conditieTxt = `Gunstig: de markt zit momenteel in een ${regimeNaam}. Historisch presteert deze setup juist beter in dit regime.${biasTxt}`;
+  } else if (regimeFit.includes("nadeel")) {
+    conditieTier = "rood";
+    conditieTxt = `Ongunstig: de markt zit momenteel in een ${regimeNaam}. Historisch presteert de setup slechter in dit regime.${biasTxt}`;
+  } else if (regime !== "onbekend" && regimeN != null && regimeN < 5) {
+    conditieTier = "geel";
+    conditieTxt = `De markt zit in een ${regimeNaam}, maar er zijn te weinig historische gevallen in dit regime (n=${regimeN}) voor een betrouwbare uitspraak.${biasTxt}`;
+  } else {
+    conditieTier = "geel";
+    const regimeWinTxt = regimeWin != null ? ` (win ${regimeWin.toFixed(1)}% in dit regime)` : "";
+    conditieTxt = `De markt zit momenteel in een ${regimeNaam}. De setup presteert vergelijkbaar onder beide marktomstandigheden${regimeWinTxt}.${biasTxt}`;
+  }
+
+  // ── Blok 4: Advies (verdict + setup_score) ────────────────────────────────
+  let adviesTier, adviesTxt;
+  if (s.verdict === "STERK") {
+    adviesTier = "groen";
+    adviesTxt = `Het systeem beschouwt dit als een sterke kans (score ${s.setup_score}/100). Alle indicatoren wijzen in dezelfde richting: hoge winrate, positieve P&L en sterke statistische basis.`;
+  } else if (s.verdict === "TOESTAAN") {
+    adviesTier = "geel";
+    adviesTxt = `Het systeem staat dit signaal toe (score ${s.setup_score}/100). De statistieken zijn voldoende, maar er is geen uitzonderlijk sterke edge aanwezig.`;
+  } else if (s.verdict === "TOESTAAN_ZWAK") {
+    adviesTier = "geel";
+    adviesTxt = `Het systeem staat dit signaal zwak toe (score ${s.setup_score}/100). De edge is beperkt — gebruik dit signaal alleen met extra bevestiging.`;
+  } else if (s.verdict === "SKIP") {
+    adviesTier = "rood";
+    adviesTxt = `Het systeem slaat deze setup gewoonlijk over (score ${s.setup_score}/100). De statistieken rechtvaardigen geen positie: de kans op verlies is statistisch te groot.`;
+  } else {
+    adviesTier = "grijs";
+    adviesTxt = `Onvoldoende data om een betrouwbaar advies te geven (score ${s.setup_score}/100).`;
+  }
+
+  // ── HTML bouwen ───────────────────────────────────────────────────────────
+  const icons = { groen: "&#10003;", geel: "&#126;", rood: "&#10005;", grijs: "?" };
+  const titels = ["Kans", "Verwachte beweging", "Marktconditie", "Advies"];
+  const blokken = [
+    { tier: kansTier,      tekst: kansTxt      },
+    { tier: bewegingTier,  tekst: bewegingTxt  },
+    { tier: conditieTier,  tekst: conditieTxt  },
+    { tier: adviesTier,    tekst: adviesTxt    },
+  ];
+
+  return blokken.map((b, i) => `
+    <div class="interp-block interp-${b.tier}">
+      <div class="interp-block-title">
+        <span class="interp-icon">${icons[b.tier]}</span>
+        ${titels[i]}
+      </div>
+      <div class="interp-block-tekst">${b.tekst}</div>
+    </div>`).join("");
+}
+
+function closeDetail() {
+  _selectedIdx = null;
+  document.getElementById("detail-col").classList.remove("open");
+  document.querySelectorAll("tbody tr").forEach(tr => tr.classList.remove("selected"));
+}
+
+// ── Data laden ────────────────────────────────────────────────────────────────
+async function loadData() {
+  try {
+    const r = await fetch(`${API}/setup/scan`, {headers: H});
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+
+    _btcRegime = data.btc_regime || "onbekend";
+    _allSetups = (data.setups || []).map((s, i) => ({ ...s, _origIdx: i }));
+
+    const vc = data.verdict_counts || {};
+
+    // Market bar
+    const regimeEl = document.getElementById("mb-regime");
+    regimeEl.textContent = _btcRegime.toUpperCase();
+    regimeEl.className = `mbar-val regime-${_btcRegime}`;
+
+    document.getElementById("mb-sterk").textContent    = vc.STERK    || 0;
+    document.getElementById("mb-toestaan").textContent = vc.TOESTAAN  || 0;
+    document.getElementById("mb-zwak").textContent     = vc.TOESTAAN_ZWAK || 0;
+    document.getElementById("mb-skip").textContent     = vc.SKIP     || 0;
+
+    const ts = data.ts ? new Date(data.ts).toLocaleTimeString("nl-NL") : "—";
+    document.getElementById("ts-label").textContent = `Laatste update: ${ts} — ${data.total} setups`;
+
+    document.getElementById("spinner").style.display = "none";
+    document.getElementById("setup-table").style.display = "table";
+
+    renderTable();
+  } catch(e) {
+    document.getElementById("spinner").innerHTML =
+      `<p style="color:#f85149;font-size:.85rem;text-align:center">Fout bij laden: ${e.message}</p>`;
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>

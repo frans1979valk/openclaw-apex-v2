@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>STERK Kwaliteit — OpenClaw Apex</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
+
+  header {
+    background: #161b22; padding: 14px 24px;
+    border-bottom: 1px solid #30363d;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 1.2rem; }
+  .nav-links { margin-left: auto; display: flex; gap: 8px; }
+  .nav-link {
+    font-size: .8rem; color: #58a6ff; text-decoration: none;
+    border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px;
+  }
+  .nav-link:hover { border-color: #58a6ff; }
+  #logout-btn {
+    font-size: .75rem; color: #8b949e; background: none;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  #logout-btn:hover { color: #f85149; border-color: #f85149; }
+
+  /* Summary bar */
+  #summary-bar {
+    background: #161b22; border-bottom: 1px solid #30363d;
+    padding: 14px 24px; display: flex; flex-wrap: wrap; gap: 12px;
+  }
+  .sum-item {
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; padding: 8px 16px;
+    text-align: center; min-width: 110px;
+  }
+  .sum-val { font-size: 1.1rem; font-weight: 700; }
+  .sum-lbl { font-size: .65rem; color: #8b949e; margin-top: 2px; }
+  .col-groen { color: #3fb950; }
+  .col-rood  { color: #f85149; }
+  .col-geel  { color: #d29922; }
+  .col-blauw { color: #58a6ff; }
+
+  /* Controls */
+  #controls {
+    padding: 10px 24px; background: #0d1117;
+    border-bottom: 1px solid #21262d;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  .filter-btn {
+    background: #21262d; color: #8b949e;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 4px 12px; cursor: pointer; font-size: .78rem;
+  }
+  .filter-btn.active { background: #0d1f35; border-color: #58a6ff; color: #58a6ff; }
+  .filter-btn.f-tp.active   { background: #1a2d1a; border-color: #3fb950; color: #3fb950; }
+  .filter-btn.f-sl.active   { background: #2a0d0d; border-color: #f85149; color: #f85149; }
+  .filter-btn.f-to.active   { background: #1a2000; border-color: #d29922; color: #d29922; }
+  #ts-label { font-size: .7rem; color: #8b949e; margin-left: auto; }
+
+  /* Uitleg blok bovenaan */
+  .uitleg-box {
+    margin: 16px 24px; background: #161b22;
+    border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px;
+    font-size: .8rem; color: #8b949e; line-height: 1.6;
+  }
+  .uitleg-box b { color: #c9d1d9; }
+
+  /* Tabel */
+  #main { padding: 0 24px 24px; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 8px; }
+  thead th {
+    text-align: left; padding: 8px 10px;
+    color: #8b949e; font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .04em; border-bottom: 1px solid #30363d;
+    position: sticky; top: 0; background: #0d1117; z-index: 1;
+    white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid #21262d; }
+  tbody tr:hover { background: #1c2128; }
+  tbody tr.tr-tp { border-left: 3px solid #3fb950; }
+  tbody tr.tr-sl { border-left: 3px solid #f85149; }
+  tbody tr.tr-to { border-left: 3px solid #d29922; }
+  tbody tr.tr-open { border-left: 3px solid #58a6ff; opacity: .8; }
+  td { padding: 7px 10px; vertical-align: middle; }
+
+  .reason-badge {
+    display: inline-block; font-size: .68rem; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; white-space: nowrap;
+  }
+  .rb-tp   { background: #1a2d1a; color: #3fb950; border: 1px solid #3fb950; }
+  .rb-sl   { background: #2a0d0d; color: #f85149; border: 1px solid #f85149; }
+  .rb-to   { background: #1a2000; color: #d29922; border: 1px solid #d29922; }
+  .rb-open { background: #0d1f35; color: #58a6ff; border: 1px solid #58a6ff; }
+
+  .pnl-pos { color: #3fb950; font-weight: 600; }
+  .pnl-neg { color: #f85149; font-weight: 600; }
+  .pnl-neu { color: #8b949e; }
+
+  /* Kwaliteitsindicator */
+  .quality-bar-wrap { display: flex; align-items: center; gap: 6px; }
+  .quality-bar-bg { width: 50px; height: 5px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .quality-bar-fill { height: 5px; border-radius: 3px; }
+
+  /* Tijdlijn indicator */
+  .timeline-cell { display: flex; gap: 4px; align-items: center; }
+  .tl-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .spinner {
+    width: 32px; height: 32px; margin: 40px auto;
+    border: 3px solid #30363d; border-top-color: #58a6ff;
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #no-results { color: #8b949e; font-size: .85rem; padding: 24px 0; }
+
+  /* Samenvatting blok */
+  .samenvatting-blok {
+    margin: 0 24px 16px;
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 16px;
+  }
+  .sv-titel {
+    font-size: .75rem; font-weight: 700; color: #8b949e;
+    text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px;
+  }
+  .sv-tekst {
+    font-size: .85rem; color: #c9d1d9; line-height: 1.65;
+  }
+  .sv-score-wrap {
+    display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;
+  }
+  .sv-score-item {
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 12px; font-size: .78rem;
+  }
+  .sv-score-val { font-weight: 700; font-size: .9rem; }
+
+  /* Chart + dag tabel sectie */
+  .analyse-wrap {
+    margin: 0 24px 20px;
+    display: grid; grid-template-columns: 1fr 320px; gap: 16px;
+  }
+  @media (max-width: 900px) { .analyse-wrap { grid-template-columns: 1fr; } }
+
+  .chart-card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 14px;
+  }
+  .chart-card-titel {
+    font-size: .72rem; color: #8b949e; text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 10px;
+  }
+  #pnl-canvas { display: block; width: 100%; height: 140px; }
+
+  .dag-card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 14px;
+  }
+  .dag-card-titel {
+    font-size: .72rem; color: #8b949e; text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 10px;
+  }
+  .dag-table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+  .dag-table th {
+    color: #8b949e; text-align: left; padding: 4px 6px;
+    border-bottom: 1px solid #21262d; white-space: nowrap;
+  }
+  .dag-table td { padding: 5px 6px; border-bottom: 1px solid #21262d; }
+  .dag-table tr:last-child td { border: none; }
+  .dag-net-pos { color: #3fb950; font-weight: 700; }
+  .dag-net-neg { color: #f85149; font-weight: 700; }
+
+  /* CSV knop */
+  .csv-btn {
+    padding: 4px 12px; border-radius: 6px;
+    background: #1a2a1f; color: #56d364; border: 1px solid #3fb950;
+    font-size: .78rem; cursor: pointer;
+  }
+  .csv-btn:hover { filter: brightness(1.2); }
+</style>
+</head>
+<body>
+
+<header>
+  <span>&#128202;</span>
+  <h1>STERK Advies Kwaliteit</h1>
+  <div class="nav-links">
+    <a class="nav-link" href="bot_positions.html">&#129302; Bot Posities</a>
+    <a class="nav-link" href="setup_intelligence.html">&#128200; Setup Intel</a>
+    <a class="nav-link" href="index.html">&#8592; Dashboard</a>
+  </div>
+  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+</header>
+
+<div id="summary-bar">
+  <div class="sum-item">
+    <div class="sum-val" id="sb-total">—</div>
+    <div class="sum-lbl">Totaal STERK trades</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val col-groen" id="sb-wins">—</div>
+    <div class="sum-lbl">Gewonnen (TP)</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val col-rood" id="sb-losses">—</div>
+    <div class="sum-lbl">Verloren (SL)</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val col-geel" id="sb-timeout">—</div>
+    <div class="sum-lbl">Timeout</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val" id="sb-winrate">—</div>
+    <div class="sum-lbl">Winrate</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val" id="sb-avgnpnl">—</div>
+    <div class="sum-lbl">Gem. netto P&L</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val" id="sb-totalnet">—</div>
+    <div class="sum-lbl">Totaal netto</div>
+  </div>
+  <div class="sum-item">
+    <div class="sum-val col-rood" id="sb-totalfee">—</div>
+    <div class="sum-lbl">Totaal fees</div>
+  </div>
+</div>
+
+<div id="controls">
+  <span style="font-size:.75rem;color:#8b949e">Filter:</span>
+  <button class="filter-btn active"    onclick="setFilter('', this)">Alles</button>
+  <button class="filter-btn f-tp"      onclick="setFilter('TP', this)">TP (gewonnen)</button>
+  <button class="filter-btn f-sl"      onclick="setFilter('SL', this)">SL (verloren)</button>
+  <button class="filter-btn f-to"      onclick="setFilter('TIMEOUT', this)">Timeout</button>
+  <button class="csv-btn" onclick="exportCSV()" title="Download als CSV">&#8595; CSV export</button>
+  <span id="ts-label">laden...</span>
+</div>
+
+<div class="uitleg-box">
+  <b>Wat zie je hier?</b> Elke rij is een trade die de testbot heeft gedaan op basis van een <b>STERK</b> advies.
+  Je kunt controleren of de STERK-adviezen ook echt goed afliepen.
+  <b style="color:#3fb950">TP</b> = doel bereikt (+4.5%), <b style="color:#f85149">SL</b> = stop-loss geraakt (-2.0%),
+  <b style="color:#d29922">TIMEOUT</b> = na 2 uur automatisch gesloten.
+  Netto P&L is na aftrek van <b>fees (0.2% round-trip)</b>.
+</div>
+
+<!-- Samenvatting in gewone taal -->
+<div class="samenvatting-blok" id="samenvatting-wrap" style="display:none">
+  <div class="sv-titel">Samenvatting in gewone taal</div>
+  <div class="sv-tekst" id="sv-tekst"></div>
+  <div class="sv-score-wrap" id="sv-scores"></div>
+</div>
+
+<!-- Cumulatief PnL chart + dagelijkse breakdown -->
+<div class="analyse-wrap" id="analyse-wrap" style="display:none">
+  <div class="chart-card">
+    <div class="chart-card-titel">Cumulatief netto P&L (per afgesloten trade)</div>
+    <canvas id="pnl-canvas" width="600" height="140"></canvas>
+  </div>
+  <div class="dag-card">
+    <div class="dag-card-titel">Per dag</div>
+    <table class="dag-table">
+      <thead>
+        <tr>
+          <th>Datum</th>
+          <th>n</th>
+          <th>TP</th>
+          <th>SL</th>
+          <th>Netto</th>
+        </tr>
+      </thead>
+      <tbody id="dag-body"></tbody>
+    </table>
+    <p id="dag-leeg" style="font-size:.75rem;color:#8b949e;margin-top:8px;display:none">
+      Nog geen gesloten trades.
+    </p>
+  </div>
+</div>
+
+<div id="main">
+  <div class="spinner" id="spinner"></div>
+  <table id="trades-table" style="display:none">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Coin</th>
+        <th>Signaal</th>
+        <th>Score</th>
+        <th>Resultaat</th>
+        <th>Entry</th>
+        <th>Sluitprijs</th>
+        <th>P&L bij 15m</th>
+        <th>P&L bij 1u</th>
+        <th>P&L bij 2u</th>
+        <th>P&L totaal</th>
+        <th>Fee</th>
+        <th>Netto</th>
+        <th>Duur</th>
+      </tr>
+    </thead>
+    <tbody id="table-body"></tbody>
+  </table>
+  <p id="no-results" style="display:none">Geen trades gevonden voor dit filter.</p>
+</div>
+
+<script>
+const API   = ``;
+const TOKEN = localStorage.getItem("oc_token") || "";
+const H     = { "X-API-KEY": TOKEN };
+
+(function() {
+  const token = localStorage.getItem("oc_token");
+  const exp   = localStorage.getItem("oc_expires");
+  if (!token || !exp || new Date(exp) <= new Date()) {
+    localStorage.removeItem("oc_token");
+    window.location.href = "login.html";
+  }
+})();
+
+function logout() {
+  localStorage.removeItem("oc_token");
+  localStorage.removeItem("oc_expires");
+  window.location.href = "login.html";
+}
+
+let _allTrades = [];
+let _filter    = "";
+
+function setFilter(f, btn) {
+  _filter = f;
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderTable();
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+function pnlHtml(v) {
+  if (v == null) return `<span class="pnl-neu">—</span>`;
+  const s   = v >= 0 ? "+" : "";
+  const cls = v > 0.1 ? "pnl-pos" : v < -0.1 ? "pnl-neg" : "pnl-neu";
+  return `<span class="${cls}">${s}${v.toFixed(2)}%</span>`;
+}
+function usdHtml(v) {
+  if (v == null) return `<span class="pnl-neu">—</span>`;
+  const s   = v >= 0 ? "+" : "";
+  const cls = v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "pnl-neu";
+  return `<span class="${cls}">${s}$${Math.abs(v).toFixed(2)}</span>`;
+}
+function priceStr(v) {
+  if (v == null) return "—";
+  return v < 1 ? v.toFixed(6) : v.toFixed(2);
+}
+function durStr(entry_ts, close_ts) {
+  if (!entry_ts || !close_ts) return "—";
+  const diff = (new Date(close_ts) - new Date(entry_ts)) / 1000;
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  return h > 0 ? `${h}u ${m}m` : `${m}m`;
+}
+function reasonBadge(r) {
+  if (!r) return `<span class="reason-badge rb-open">OPEN</span>`;
+  const map = { TP: "rb-tp", SL: "rb-sl", TIMEOUT: "rb-to" };
+  return `<span class="reason-badge ${map[r] || 'rb-open'}">${r}</span>`;
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+function exportCSV() {
+  const cols = ["id","symbol","signal","setup_score","close_reason",
+                "entry_ts","close_ts","entry_price","close_price",
+                "pnl_15m_pct","pnl_1h_pct","pnl_2h_pct","pnl_pct",
+                "pnl_usd","fee_usd","net_pnl_usd"];
+  const rows = [cols.join(",")];
+  for (const t of _allTrades) {
+    rows.push(cols.map(c => {
+      const v = t[c];
+      if (v == null) return "";
+      if (typeof v === "string" && v.includes(",")) return `"${v}"`;
+      return v;
+    }).join(","));
+  }
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `sterk_trades_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Cumulatief PnL chart (canvas) ─────────────────────────────────────────────
+function drawChart(trades) {
+  const closed = trades.filter(t => t.close_reason && t.net_pnl_usd != null)
+    .slice().reverse();  // oudste eerst
+  if (!closed.length) return;
+
+  const canvas = document.getElementById("pnl-canvas");
+  const W = canvas.offsetWidth || 600;
+  const H = 140;
+  canvas.width  = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  const pad = { top: 12, right: 16, bottom: 24, left: 48 };
+  const cw  = W - pad.left - pad.right;
+  const ch  = H - pad.top  - pad.bottom;
+
+  // Cumulatief berekenen
+  let cumul = 0;
+  const points = closed.map((t, i) => {
+    cumul += (t.net_pnl_usd || 0);
+    return { x: i, y: cumul };
+  });
+
+  const minY = Math.min(0, ...points.map(p => p.y));
+  const maxY = Math.max(0, ...points.map(p => p.y));
+  const rangeY = maxY - minY || 1;
+  const n = points.length;
+
+  const px = i => pad.left + (n === 1 ? cw / 2 : i / (n - 1) * cw);
+  const py = y => pad.top  + ch - (y - minY) / rangeY * ch;
+
+  // Achtergrond
+  ctx.fillStyle = "#0d1117";
+  ctx.fillRect(0, 0, W, H);
+
+  // Nul lijn
+  const zero_y = py(0);
+  ctx.strokeStyle = "#30363d";
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.left, zero_y);
+  ctx.lineTo(pad.left + cw, zero_y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Y labels
+  ctx.fillStyle = "#8b949e";
+  ctx.font = "10px system-ui";
+  ctx.textAlign = "right";
+  ctx.fillText(`+$${maxY.toFixed(1)}`, pad.left - 4, pad.top + 4);
+  ctx.fillText(`$0`, pad.left - 4, zero_y + 4);
+  if (minY < 0) ctx.fillText(`-$${Math.abs(minY).toFixed(1)}`, pad.left - 4, pad.top + ch + 4);
+
+  // Vlak onder nul (rood)
+  if (minY < 0) {
+    ctx.fillStyle = "rgba(248,81,73,0.08)";
+    ctx.fillRect(pad.left, zero_y, cw, py(minY) - zero_y);
+  }
+  // Vlak boven nul (groen)
+  if (maxY > 0) {
+    ctx.fillStyle = "rgba(63,185,80,0.08)";
+    ctx.fillRect(pad.left, py(maxY), cw, zero_y - py(maxY));
+  }
+
+  if (points.length < 2) {
+    // Enkelpunt
+    const x0 = px(0), y0 = py(points[0].y);
+    ctx.beginPath();
+    ctx.arc(x0, y0, 4, 0, Math.PI*2);
+    ctx.fillStyle = points[0].y >= 0 ? "#3fb950" : "#f85149";
+    ctx.fill();
+  } else {
+    // Lijn
+    ctx.lineWidth = 2;
+    ctx.lineJoin  = "round";
+    ctx.strokeStyle = points[points.length-1].y >= 0 ? "#3fb950" : "#f85149";
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      i === 0 ? ctx.moveTo(px(p.x), py(p.y)) : ctx.lineTo(px(p.x), py(p.y));
+    });
+    ctx.stroke();
+
+    // Punten
+    for (const p of points) {
+      ctx.beginPath();
+      ctx.arc(px(p.x), py(p.y), 3, 0, Math.PI*2);
+      ctx.fillStyle = p.y >= 0 ? "#3fb950" : "#f85149";
+      ctx.fill();
+    }
+  }
+
+  // Laatste waarde label
+  const last = points[points.length - 1];
+  const lx   = px(last.x);
+  const ly   = py(last.y);
+  const lbl  = `${last.y >= 0 ? "+" : ""}$${last.y.toFixed(2)}`;
+  ctx.fillStyle    = last.y >= 0 ? "#3fb950" : "#f85149";
+  ctx.font         = "bold 11px system-ui";
+  ctx.textAlign    = lx > W - 60 ? "right" : "left";
+  ctx.fillText(lbl, lx + (lx > W - 60 ? -6 : 6), ly - 6);
+}
+
+// ── Dagelijkse breakdown ──────────────────────────────────────────────────────
+function buildDayBreakdown(trades) {
+  const closed = trades.filter(t => t.close_ts);
+  if (!closed.length) {
+    document.getElementById("dag-leeg").style.display = "block";
+    return;
+  }
+
+  // Groepeer op datum (close_ts)
+  const byDay = {};
+  for (const t of closed) {
+    const dag = t.close_ts.slice(0, 10);
+    if (!byDay[dag]) byDay[dag] = [];
+    byDay[dag].push(t);
+  }
+
+  const dagen = Object.keys(byDay).sort().reverse();  // nieuwste eerst
+  const tbody = document.getElementById("dag-body");
+
+  tbody.innerHTML = dagen.map(dag => {
+    const rows = byDay[dag];
+    const tp   = rows.filter(t => t.close_reason === "TP").length;
+    const sl   = rows.filter(t => t.close_reason === "SL").length;
+    const net  = rows.reduce((a, t) => a + (t.net_pnl_usd || 0), 0);
+    const cls  = net >= 0 ? "dag-net-pos" : "dag-net-neg";
+    const s    = net >= 0 ? "+" : "";
+    return `<tr>
+      <td style="color:#8b949e">${dag.slice(5)}</td>
+      <td>${rows.length}</td>
+      <td style="color:#3fb950">${tp}</td>
+      <td style="color:#f85149">${sl}</td>
+      <td class="${cls}">${s}$${Math.abs(net).toFixed(2)}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Samenvatting in gewone taal ───────────────────────────────────────────────
+function buildSamenvatting(trades, data) {
+  const closed = trades.filter(t => t.close_reason);
+  if (!closed.length) return;
+
+  const n    = closed.length;
+  const wins = closed.filter(t => t.close_reason === "TP").length;
+  const wr   = Math.round(wins / n * 100);
+  const totalNet = closed.reduce((a, t) => a + (t.net_pnl_usd || 0), 0);
+  const avgNet   = totalNet / n;
+
+  // Gem. duur van trades
+  const durs = closed.filter(t => t.entry_ts && t.close_ts).map(t =>
+    (new Date(t.close_ts) - new Date(t.entry_ts)) / 60000
+  );
+  const avgMin = durs.length ? Math.round(durs.reduce((a,b) => a+b, 0) / durs.length) : null;
+
+  // Beste en slechtste coin
+  const bySymbol = {};
+  for (const t of closed) {
+    const s = (t.symbol || "").replace("USDT","");
+    if (!bySymbol[s]) bySymbol[s] = { net: 0, n: 0 };
+    bySymbol[s].net += t.net_pnl_usd || 0;
+    bySymbol[s].n++;
+  }
+  const coins  = Object.entries(bySymbol).sort((a,b) => b[1].net - a[1].net);
+  const beste  = coins[0];
+  const slechtste = coins[coins.length - 1];
+
+  // Oordeel
+  let oordeel, oordeel_kleur;
+  if (wr >= 60 && totalNet > 0) {
+    oordeel = "De STERK adviezen werken goed. Meer dan 60% van de trades was winstgevend en het totaalresultaat is positief.";
+    oordeel_kleur = "#3fb950";
+  } else if (wr >= 45 && totalNet >= 0) {
+    oordeel = "De STERK adviezen werken redelijk. De winrate is acceptabel en het resultaat staat in de plus.";
+    oordeel_kleur = "#d29922";
+  } else if (wr >= 45 && totalNet < 0) {
+    oordeel = "Gemengd beeld: de winrate is redelijk maar de fees en verliezende trades wegen zwaarder. Meer data nodig.";
+    oordeel_kleur = "#d29922";
+  } else {
+    oordeel = "De STERK adviezen presteren nog niet zoals verwacht. Meer data verzamelen voor een betrouwbaar beeld.";
+    oordeel_kleur = n < 10 ? "#8b949e" : "#f85149";
+  }
+
+  const tekst_el = document.getElementById("sv-tekst");
+  tekst_el.innerHTML = `
+    <span style="color:${oordeel_kleur};font-weight:700">${oordeel}</span>
+    <br><br>
+    Van de <b>${n}</b> afgesloten trades was <b>${wins}</b> winstgevend (${wr}% winrate).
+    ${avgMin ? `De gemiddelde looptijd was <b>${avgMin < 60 ? avgMin+"m" : Math.round(avgMin/60*10)/10+"u"}</b>.` : ""}
+    ${beste && beste[1].net > 0 ? `Beste coin: <b style="color:#3fb950">${beste[0]}</b> (+$${beste[1].net.toFixed(2)} over ${beste[1].n} trade${beste[1].n>1?"s":""}).` : ""}
+    ${slechtste && slechtste[1].net < 0 && coins.length > 1 ? `Slechtste coin: <b style="color:#f85149">${slechtste[0]}</b> (-$${Math.abs(slechtste[1].net).toFixed(2)}).` : ""}
+  `;
+
+  const scores_el = document.getElementById("sv-scores");
+  const kpis = [
+    { lbl: "Trades", val: n, kleur: "#e6edf3" },
+    { lbl: "Winrate", val: `${wr}%`, kleur: wr >= 55 ? "#3fb950" : wr >= 45 ? "#d29922" : "#f85149" },
+    { lbl: "Gem. netto/trade", val: `${avgNet>=0?"+":""}$${avgNet.toFixed(2)}`, kleur: avgNet>=0?"#3fb950":"#f85149" },
+    { lbl: "Totaal netto", val: `${totalNet>=0?"+":""}$${totalNet.toFixed(2)}`, kleur: totalNet>=0?"#3fb950":"#f85149" },
+  ];
+  scores_el.innerHTML = kpis.map(k =>
+    `<div class="sv-score-item">
+      <div class="sv-score-val" style="color:${k.kleur}">${k.val}</div>
+      <div style="font-size:.65rem;color:#8b949e;margin-top:2px">${k.lbl}</div>
+    </div>`
+  ).join("");
+
+  document.getElementById("samenvatting-wrap").style.display = "block";
+}
+
+// ── Render tabel ──────────────────────────────────────────────────────────────
+function renderTable() {
+  let rows = _allTrades;
+  if (_filter) rows = rows.filter(t => (t.close_reason || "OPEN") === _filter);
+
+  const noRes = document.getElementById("no-results");
+  const tbody = document.getElementById("table-body");
+
+  if (!rows.length) {
+    tbody.innerHTML = "";
+    noRes.style.display = "block";
+    return;
+  }
+  noRes.style.display = "none";
+
+  tbody.innerHTML = rows.map(t => {
+    const reason = t.close_reason || "OPEN";
+    const trCls  = reason === "TP" ? "tr-tp"
+                 : reason === "SL" ? "tr-sl"
+                 : reason === "TIMEOUT" ? "tr-to" : "tr-open";
+
+    return `<tr class="${trCls}">
+      <td style="color:#8b949e">${t.id}</td>
+      <td style="font-weight:700">${(t.symbol || "").replace("USDT","")}</td>
+      <td style="color:#8b949e;font-size:.72rem">${t.signal || "—"}</td>
+      <td>
+        <div class="quality-bar-wrap">
+          <div class="quality-bar-bg">
+            <div class="quality-bar-fill" style="width:${t.setup_score||0}%;background:${(t.setup_score||0)>=70?'#3fb950':'#d29922'}"></div>
+          </div>
+          <span style="font-size:.8rem;font-weight:700;color:${(t.setup_score||0)>=70?'#3fb950':'#d29922'}">${t.setup_score||"—"}</span>
+        </div>
+      </td>
+      <td>${reasonBadge(t.close_reason)}</td>
+      <td style="font-variant-numeric:tabular-nums">${priceStr(t.entry_price)}</td>
+      <td style="font-variant-numeric:tabular-nums">${priceStr(t.close_price)}</td>
+      <td>${pnlHtml(t.pnl_15m_pct)}</td>
+      <td>${pnlHtml(t.pnl_1h_pct)}</td>
+      <td>${pnlHtml(t.pnl_2h_pct)}</td>
+      <td>${pnlHtml(t.pnl_pct)}</td>
+      <td style="color:#f85149;font-size:.78rem">${t.fee_usd != null ? `-$${t.fee_usd.toFixed(2)}` : "—"}</td>
+      <td>${usdHtml(t.net_pnl_usd)}</td>
+      <td style="color:#8b949e;font-size:.78rem">${durStr(t.entry_ts, t.close_ts)}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Data laden ────────────────────────────────────────────────────────────────
+async function loadData() {
+  try {
+    const r = await fetch(`${API}/testbot/history?limit=200`, { headers: H });
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+
+    _allTrades = d.trades || [];
+
+    // Summary bar
+    document.getElementById("sb-total").textContent = d.total ?? 0;
+    const wins    = _allTrades.filter(t => t.close_reason === "TP").length;
+    const losses  = _allTrades.filter(t => t.close_reason === "SL").length;
+    const timeouts = _allTrades.filter(t => t.close_reason === "TIMEOUT").length;
+    document.getElementById("sb-wins").textContent    = wins;
+    document.getElementById("sb-losses").textContent  = losses;
+    document.getElementById("sb-timeout").textContent = timeouts;
+
+    const wrEl = document.getElementById("sb-winrate");
+    const wr   = d.winrate_pct;
+    wrEl.textContent = wr != null ? `${wr}%` : "—";
+    wrEl.className   = `sum-val ${wr >= 55 ? "col-groen" : wr >= 45 ? "col-geel" : "col-rood"}`;
+
+    const closed   = _allTrades.filter(t => t.close_reason);
+    const avgNet   = closed.length
+      ? closed.reduce((a, t) => a + (t.net_pnl_usd || 0), 0) / closed.length
+      : null;
+    const avgEl = document.getElementById("sb-avgnpnl");
+    if (avgNet != null) {
+      const s = avgNet >= 0 ? "+" : "";
+      avgEl.textContent = `${s}$${avgNet.toFixed(2)}`;
+      avgEl.className   = `sum-val ${avgNet >= 0 ? "col-groen" : "col-rood"}`;
+    } else {
+      avgEl.textContent = "—";
+    }
+
+    const netEl = document.getElementById("sb-totalnet");
+    netEl.textContent = d.total_net_usd != null
+      ? `${d.total_net_usd >= 0 ? "+" : ""}$${Math.abs(d.total_net_usd).toFixed(2)}`
+      : "—";
+    netEl.className = `sum-val ${(d.total_net_usd||0) >= 0 ? "col-groen" : "col-rood"}`;
+
+    document.getElementById("sb-totalfee").textContent = d.total_fee_usd != null
+      ? `-$${d.total_fee_usd.toFixed(2)}` : "—";
+
+    document.getElementById("ts-label").textContent =
+      `Laatste update: ${new Date().toLocaleTimeString("nl-NL")} — ${d.total} gesloten trades`;
+
+    document.getElementById("spinner").style.display = "none";
+    document.getElementById("trades-table").style.display = "table";
+
+    // Analyse secties (alleen bij voldoende data)
+    const closedTrades = _allTrades.filter(t => t.close_reason);
+    if (closedTrades.length > 0) {
+      document.getElementById("analyse-wrap").style.display = "grid";
+      buildDayBreakdown(_allTrades);
+      buildSamenvatting(_allTrades, d);
+      // Chart tekenen na korte delay (DOM moet renderen)
+      requestAnimationFrame(() => drawChart(_allTrades));
+    }
+
+    renderTable();
+
+  } catch(e) {
+    document.getElementById("spinner").innerHTML =
+      `<p style="color:#f85149;font-size:.85rem;text-align:center">Fout bij laden: ${e.message}</p>`;
+  }
+}
+
+loadData();
+setInterval(loadData, 60000);  // refresh elke minuut
+</script>
+</body>
+</html>

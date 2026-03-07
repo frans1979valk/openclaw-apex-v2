@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from db_compat import get_conn, dict_cursor, adapt_query, is_pg
+import testbot as _tb
 
 DB_PATH = "/var/apex/apex.db"  # fallback for SQLite mode
 STATE_PATH = "/var/apex/bot_state.json"
@@ -1810,4 +1811,532 @@ def get_policy(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
         "allowed_proposal_types": list(PROPOSAL_TYPES),
         "allow_live": False,
         "confirm_required": True,
+    }
+
+
+# ── Setup Intelligence ─────────────────────────────────────────────────────────
+_ANALYTICS_URL = os.getenv("ANALYTICS_URL", "http://jojo_analytics:8097")
+
+# Drempels (zelfde als setup_judge.py)
+_SJ_SKIP_WIN        = 25.0
+_SJ_STERK_WIN       = 55.0
+_SJ_SKIP_PNL        = -0.30
+_SJ_STERK_PNL       = 0.20
+_SJ_MIN_N           = 10
+_SJ_MIN_N_STERK     = 20
+_SJ_SCORE_STERK     = 70
+_SJ_SCORE_TOESTAAN  = 50
+_SJ_SCORE_ZWAK      = 30
+
+
+def _sj_query(sql: str) -> list:
+    try:
+        r = requests.post(f"{_ANALYTICS_URL}/query", json={"sql": sql}, timeout=15)
+        r.raise_for_status()
+        return r.json().get("rows", [])
+    except Exception as e:
+        log.warning(f"setup/scan query fout: {e}")
+        return []
+
+
+def _sj_btc_regime() -> str:
+    rows = _sj_query(
+        "SELECT ema_bull FROM indicators_data "
+        "WHERE symbol = 'BTCUSDT' AND interval = '1h' "
+        "ORDER BY ts DESC LIMIT 1"
+    )
+    if not rows:
+        return "onbekend"
+    val = rows[0].get("ema_bull")
+    if val is True or str(val).lower() in ("true", "1", "t"):
+        return "bull"
+    if val is False or str(val).lower() in ("false", "0", "f"):
+        return "bear"
+    return "onbekend"
+
+
+def _sj_score(win, avg_1h, n, regime_boost=0):
+    if win is None or avg_1h is None:
+        return 0
+    w, p = float(win), float(avg_1h)
+    s = 0
+    # Win rate (0-40)
+    if w >= 55:   s += 40
+    elif w >= 45: s += 30
+    elif w >= 35: s += 20
+    elif w >= 25: s += 10
+    # PnL (0-30)
+    if p >= 0.50:    s += 30
+    elif p >= 0.20:  s += 25
+    elif p >= 0.05:  s += 18
+    elif p >= 0.00:  s += 12
+    elif p >= -0.10: s += 6
+    elif p >= -0.30: s += 2
+    # N (0-15)
+    if n >= 100:  s += 15
+    elif n >= 50: s += 12
+    elif n >= 20: s += 8
+    elif n >= 10: s += 4
+    # Regime boost
+    s += max(0, min(15, int(regime_boost)))
+    return max(0, min(100, s))
+
+
+def _sj_edge_strength(win, avg_1h, n):
+    if win is None or avg_1h is None or n < _SJ_MIN_N:
+        return "geen"
+    w, p = float(win), float(avg_1h)
+    if w >= 55 and p >= 0.30 and n >= 30:
+        return "sterk"
+    if w >= 45 and p >= 0.10 and n >= 15:
+        return "midden"
+    if w >= 35 and p >= 0.0:
+        return "zwak"
+    return "negatief"
+
+
+def _sj_process_row(row, current_regime: str) -> dict | None:
+    n = int(row.get("n") or 0)
+    if n < _SJ_MIN_N:
+        return None
+
+    def _f(k):  return round(float(row[k]), 3) if row.get(k) is not None else None
+    def _f1(k): return round(float(row[k]), 1) if row.get(k) is not None else None
+
+    win    = _f1("win1h")
+    avg_1h = _f("avg_1h")
+    avg_4h = _f("avg_4h")
+    n_bull = int(row.get("n_bull") or 0)
+    n_bear = int(row.get("n_bear") or 0)
+    win_bull = _f1("win1h_bull")
+    win_bear = _f1("win1h_bear")
+    avg_bull = _f("avg_1h_bull")
+    avg_bear = _f("avg_1h_bear")
+
+    # Regime boost
+    regime_boost = 0
+    if current_regime in ("bull", "bear") and win is not None:
+        win_r = win_bull if current_regime == "bull" else win_bear
+        n_r   = n_bull   if current_regime == "bull" else n_bear
+        if win_r is not None and n_r >= 5:
+            delta = float(win_r) - float(win)
+            regime_boost = max(0, min(15, int(delta / 2)))
+
+    score = _sj_score(win, avg_1h, n, regime_boost)
+
+    # Verdict
+    if n < _SJ_MIN_N:
+        verdict = "ONBEKEND"
+    elif win is not None and win < _SJ_SKIP_WIN and avg_1h is not None and avg_1h < _SJ_SKIP_PNL:
+        verdict = "SKIP"
+    elif score >= _SJ_SCORE_STERK and win >= _SJ_STERK_WIN and avg_1h >= _SJ_STERK_PNL and n >= _SJ_MIN_N_STERK:
+        verdict = "STERK"
+    elif score >= _SJ_SCORE_TOESTAAN:
+        verdict = "TOESTAAN"
+    elif score >= _SJ_SCORE_ZWAK:
+        verdict = "TOESTAAN_ZWAK"
+    else:
+        verdict = "SKIP"
+
+    # Regime fit
+    if current_regime in ("bull", "bear") and win is not None:
+        win_r = win_bull if current_regime == "bull" else win_bear
+        n_r   = n_bull   if current_regime == "bull" else n_bear
+        if win_r is not None and n_r >= 5:
+            delta = float(win_r) - float(win)
+            regime_fit = f"{current_regime}_voordeel" if delta > 5 else (f"{current_regime}_nadeel" if delta < -5 else current_regime)
+        else:
+            regime_fit = "onvoldoende_data"
+    else:
+        regime_fit = "onbekend"
+
+    return {
+        "symbol":      row.get("symbol"),
+        "signal":      row.get("signal"),
+        "setup_score": score,
+        "verdict":     verdict,
+        "n":           n,
+        "win_pct_1h":  win,
+        "avg_1h":      avg_1h,
+        "avg_4h":      avg_4h,
+        "edge_strength": _sj_edge_strength(win, avg_1h, n),
+        "regime_fit":  regime_fit,
+        "n_bull":      n_bull,
+        "n_bear":      n_bear,
+        "win_bull":    win_bull,
+        "win_bear":    win_bear,
+        "avg_1h_bull": avg_bull,
+        "avg_1h_bear": avg_bear,
+    }
+
+
+@app.get("/setup/scan")
+def setup_scan(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """
+    Bulk setup intelligence scan.
+    Haalt stats op voor elke (symbol, signal) combinatie in historical_context.
+    Berekent setup_score, verdict, regime_fit en edge_strength.
+    """
+    auth(x_api_key)
+
+    # 1. Huidig BTC-regime
+    btc_regime = _sj_btc_regime()
+
+    # 2. Bulk query: alle coins × signalen in één call
+    rows = _sj_query("""
+        SELECT
+            symbol,
+            signal,
+            COUNT(*) as n,
+            AVG(pnl_1h_pct) as avg_1h,
+            AVG(pnl_4h_pct) as avg_4h,
+            100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(COUNT(*), 0) as win1h,
+            SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END) as n_bull,
+            AVG(CASE WHEN btc_regime = 'bull' THEN pnl_1h_pct END) as avg_1h_bull,
+            100.0 * SUM(CASE WHEN btc_regime = 'bull' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bull' THEN 1 ELSE 0 END), 0) as win1h_bull,
+            SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END) as n_bear,
+            AVG(CASE WHEN btc_regime = 'bear' THEN pnl_1h_pct END) as avg_1h_bear,
+            100.0 * SUM(CASE WHEN btc_regime = 'bear' AND pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                  / NULLIF(SUM(CASE WHEN btc_regime = 'bear' THEN 1 ELSE 0 END), 0) as win1h_bear
+        FROM historical_context
+        WHERE pnl_1h_pct IS NOT NULL
+          AND symbol != 'USDCUSDT'
+        GROUP BY symbol, signal
+        HAVING COUNT(*) >= 5
+        ORDER BY symbol, signal
+    """)
+
+    # 3. Verwerk + score elke rij
+    setups = []
+    for row in rows:
+        result = _sj_process_row(row, btc_regime)
+        if result:
+            setups.append(result)
+
+    # 4. Sorteer op setup_score desc
+    setups.sort(key=lambda x: x["setup_score"], reverse=True)
+
+    # 5. Verdeling per verdict
+    verdicts = {"STERK": 0, "TOESTAAN": 0, "TOESTAAN_ZWAK": 0, "SKIP": 0, "ONBEKEND": 0}
+    for s in setups:
+        verdicts[s["verdict"]] = verdicts.get(s["verdict"], 0) + 1
+
+    return {
+        "btc_regime":     btc_regime,
+        "setups":         setups,
+        "verdict_counts": verdicts,
+        "total":          len(setups),
+        "ts":             datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ── Chart Data ─────────────────────────────────────────────────────────────────
+def _ts_unix(ts_val) -> int:
+    """Converteert timestamp string (met of zonder tz) naar Unix seconden (int)."""
+    s = str(ts_val).strip().replace(" ", "T")
+    # Verwijder timezone suffix — alles is UTC
+    for sep in ("+", "Z"):
+        idx = s.find(sep, 10)
+        if idx != -1:
+            s = s[:idx]
+    try:
+        return int(datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp())
+    except Exception:
+        return 0
+
+
+@app.get("/chart/markers/{symbol}")
+def chart_markers(
+    symbol:   str,
+    interval: str = "1h",
+    limit:    int = 300,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """
+    Chart data voor één coin: OHLCV candles, EMA-lijnen, verdict-markers en crash-scores.
+    interval: 1h | 4h  (voor 5m/15m haalt de browser Binance direct op)
+    """
+    auth(x_api_key)
+    sym = "".join(c for c in symbol if c.isalnum())[:20].upper()
+    iv  = interval if interval in ("1h", "4h") else "1h"
+
+    # 1. OHLCV candles via jojo_analytics (PostgreSQL)
+    raw_candles = _sj_query(f"""
+        SELECT ts, open, high, low, close, volume
+        FROM ohlcv_data
+        WHERE symbol = '{sym}' AND interval = '{iv}'
+        ORDER BY ts DESC
+        LIMIT {min(limit, 1000)}
+    """)
+    candles = sorted([
+        {
+            "time":   _ts_unix(r["ts"]),
+            "open":   float(r["open"]  or 0),
+            "high":   float(r["high"]  or 0),
+            "low":    float(r["low"]   or 0),
+            "close":  float(r["close"] or 0),
+            "volume": float(r["volume"] or 0),
+        }
+        for r in raw_candles
+        if r.get("ts") and r.get("close")
+    ], key=lambda x: x["time"])
+
+    # 2. EMA-lijnen via jojo_analytics (alleen voor 1h)
+    emas = []
+    if iv == "1h":
+        raw_emas = _sj_query(f"""
+            SELECT ts, ema21, ema55, ema200
+            FROM indicators_data
+            WHERE symbol = '{sym}' AND interval = '1h'
+            ORDER BY ts DESC
+            LIMIT {min(limit, 1000)}
+        """)
+        emas = sorted([
+            {
+                "time":   _ts_unix(r["ts"]),
+                "ema21":  float(r["ema21"])  if r.get("ema21")  is not None else None,
+                "ema55":  float(r["ema55"])  if r.get("ema55")  is not None else None,
+                "ema200": float(r["ema200"]) if r.get("ema200") is not None else None,
+            }
+            for r in raw_emas
+            if r.get("ts") and r.get("ema21") is not None
+        ], key=lambda x: x["time"])
+
+    # 3. Verdicts rechtstreeks uit SQLite (verdict_log bestaat niet in PostgreSQL)
+    verdicts = []
+    try:
+        import sqlite3 as _sqlite3
+        _sc = _sqlite3.connect(DB_PATH)
+        _cur = _sc.cursor()
+        _cur.execute("""
+            SELECT vl.ts, vl.verdict, vl.signal, vl.rsi_1h,
+                   vl.avg_1h, vl.win_pct_1h, vl.n, vl.reden,
+                   sp.entry_price, sp.pnl_1h_pct, sp.pnl_4h_pct
+            FROM verdict_log vl
+            LEFT JOIN signal_performance sp ON sp.id = vl.signal_perf_id
+            WHERE vl.symbol = ?
+            ORDER BY vl.ts ASC
+        """, (sym,))
+        for r in _cur.fetchall():
+            t = _ts_unix(r[0])
+            if t:
+                verdicts.append({
+                    "time":        t,
+                    "verdict":     r[1],
+                    "signal":      r[2],
+                    "rsi":         round(float(r[3]), 1) if r[3] is not None else None,
+                    "avg_1h_hist": round(float(r[4]), 3) if r[4] is not None else None,
+                    "win_pct":     round(float(r[5]), 1) if r[5] is not None else None,
+                    "n":           r[6],
+                    "reden":       r[7],
+                    "entry_price": float(r[8]) if r[8] is not None else None,
+                    "pnl_1h":      round(float(r[9]),  3) if r[9]  is not None else None,
+                    "pnl_4h":      round(float(r[10]), 3) if r[10] is not None else None,
+                })
+        _sc.close()
+    except Exception as e:
+        log.warning(f"chart_markers verdicts fout: {e}")
+
+    # 4. Crash scores uit SQLite crash_score_log
+    crash_scores = []
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            SELECT ts, score FROM crash_score_log
+            WHERE symbol = ?
+            ORDER BY ts ASC
+        """), (sym,))
+        for r in cur.fetchall():
+            t = _ts_unix(r[0])
+            if t:
+                crash_scores.append({"time": t, "score": round(float(r[1] or 0), 1)})
+        conn.close()
+    except Exception as e:
+        log.warning(f"chart_markers crash_scores fout: {e}")
+
+    return {
+        "symbol":       sym,
+        "interval":     iv,
+        "candles":      candles,
+        "emas":         emas,
+        "verdicts":     verdicts,
+        "crash_scores": crash_scores,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TestBot endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBotOpen(BaseModel):
+    symbol: str
+    signal: str = ""
+    setup_score: int = 0
+
+
+@app.get("/testbot/status")
+def testbot_status(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    auth(x_api_key)
+    return _tb.bot_status()
+
+
+@app.post("/testbot/start")
+def testbot_start(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    auth(x_api_key)
+    return _tb.start_bot()
+
+
+@app.post("/testbot/stop")
+def testbot_stop(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    auth(x_api_key)
+    return _tb.stop_bot()
+
+
+@app.post("/testbot/open")
+def testbot_open(body: TestBotOpen, x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Handmatig een STERK trade openen (voor tests)."""
+    auth(x_api_key)
+    sym = "".join(c for c in body.symbol if c.isalnum()).upper()
+    return _tb.manual_open(sym, body.signal, body.setup_score)
+
+
+@app.get("/testbot/positions")
+def testbot_positions(x_api_key: str | None = Header(default=None, alias="X-API-KEY")):
+    """Open posities met live Binance prijs en actuele PnL."""
+    auth(x_api_key)
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT id, symbol, signal, setup_score, entry_price,
+               entry_ts, stake_usd, tp_pct, sl_pct, tp_price, sl_price
+        FROM testbot_trades
+        WHERE status = 'open'
+        ORDER BY entry_ts ASC
+    """))
+    rows = cur.fetchall()
+    conn.close()
+
+    positions = []
+    for r in rows:
+        tid, sym, sig, score, ep, ets, stake, tp_pct, sl_pct, tp_p, sl_p = r
+        ep = float(ep)
+
+        # Live prijs
+        live = _tb._binance_price(sym)
+        if isinstance(ets, datetime):
+            ets_dt = ets if ets.tzinfo else ets.replace(tzinfo=timezone.utc)
+        else:
+            try:
+                ets_dt = datetime.fromisoformat(str(ets).replace(" ", "T"))
+                if ets_dt.tzinfo is None:
+                    ets_dt = ets_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                ets_dt = datetime.now(timezone.utc)
+
+        age_s  = (datetime.now(timezone.utc) - ets_dt).total_seconds()
+        pnl_pct = ((live - ep) / ep * 100) if live else None
+        pnl_usd = (pnl_pct / 100 * float(stake)) if pnl_pct is not None else None
+
+        positions.append({
+            "id":          tid,
+            "symbol":      sym,
+            "signal":      sig,
+            "setup_score": score,
+            "entry_price": ep,
+            "entry_ts":    ets_dt.isoformat(),
+            "age_seconds": int(age_s),
+            "stake_usd":   float(stake),
+            "tp_pct":      float(tp_pct),
+            "sl_pct":      float(sl_pct),
+            "tp_price":    float(tp_p),
+            "sl_price":    float(sl_p),
+            "live_price":  live,
+            "pnl_pct":     round(pnl_pct, 3) if pnl_pct is not None else None,
+            "pnl_usd":     round(pnl_usd, 2) if pnl_usd is not None else None,
+        })
+
+    return {
+        "positions":  positions,
+        "n_open":     len(positions),
+        "free_slots": _tb.MAX_TRADES - len(positions),
+        "ts":         datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/testbot/history")
+def testbot_history(
+    limit:  int = 100,
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """Gesloten trades — meest recent eerst."""
+    auth(x_api_key)
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT id, symbol, signal, setup_score,
+               entry_price, entry_ts, close_price, close_ts, close_reason,
+               stake_usd, tp_pct, sl_pct,
+               price_15m, price_1h, price_2h,
+               pnl_pct, pnl_usd, fee_usd, net_pnl_usd
+        FROM testbot_trades
+        WHERE status = 'closed'
+        ORDER BY close_ts DESC
+        LIMIT ?
+    """), (min(limit, 500),))
+    rows = cur.fetchall()
+    conn.close()
+
+    def _pnl_at(ep, px):
+        if ep and px:
+            return round((float(px) - float(ep)) / float(ep) * 100, 3)
+        return None
+
+    trades = []
+    for r in rows:
+        (tid, sym, sig, score,
+         ep, ets, cp, cts, reason,
+         stake, tp_pct, sl_pct,
+         p15m, p1h, p2h,
+         pnl_p, pnl_u, fee_u, net_u) = r
+        ep = float(ep)
+        trades.append({
+            "id":          tid,
+            "symbol":      sym,
+            "signal":      sig,
+            "setup_score": score,
+            "entry_price": ep,
+            "entry_ts":    str(ets),
+            "close_price": float(cp) if cp else None,
+            "close_ts":    str(cts) if cts else None,
+            "close_reason": reason,
+            "stake_usd":   float(stake),
+            "tp_pct":      float(tp_pct),
+            "sl_pct":      float(sl_pct),
+            "pnl_15m_pct": _pnl_at(ep, p15m),
+            "pnl_1h_pct":  _pnl_at(ep, p1h),
+            "pnl_2h_pct":  _pnl_at(ep, p2h),
+            "pnl_pct":     float(pnl_p) if pnl_p is not None else None,
+            "pnl_usd":     float(pnl_u) if pnl_u is not None else None,
+            "fee_usd":     float(fee_u) if fee_u is not None else None,
+            "net_pnl_usd": float(net_u) if net_u is not None else None,
+        })
+
+    # Totaalstats
+    wins    = sum(1 for t in trades if (t["net_pnl_usd"] or 0) > 0)
+    total_n = len(trades)
+    total_net = sum(t["net_pnl_usd"] or 0 for t in trades)
+    total_fee = sum(t["fee_usd"] or 0 for t in trades)
+
+    return {
+        "trades":       trades,
+        "total":        total_n,
+        "wins":         wins,
+        "losses":       total_n - wins,
+        "winrate_pct":  round(wins / total_n * 100, 1) if total_n else None,
+        "total_net_usd": round(total_net, 2),
+        "total_fee_usd": round(total_fee, 2),
+        "ts":           datetime.now(timezone.utc).isoformat(),
     }

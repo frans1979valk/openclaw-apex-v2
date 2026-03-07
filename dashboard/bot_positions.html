@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bot Posities — OpenClaw Apex</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3; }
+
+  header {
+    background: #161b22; padding: 14px 24px;
+    border-bottom: 1px solid #30363d;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 1.2rem; }
+  .nav-links { margin-left: auto; display: flex; gap: 8px; }
+  .nav-link {
+    font-size: .8rem; color: #58a6ff; text-decoration: none;
+    border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px;
+  }
+  .nav-link:hover { border-color: #58a6ff; }
+  #logout-btn {
+    font-size: .75rem; color: #8b949e; background: none;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  #logout-btn:hover { color: #f85149; border-color: #f85149; }
+
+  /* Bot status bar */
+  #status-bar {
+    background: #161b22; border-bottom: 1px solid #30363d;
+    padding: 12px 24px; display: flex; flex-wrap: wrap;
+    gap: 12px; align-items: center;
+  }
+  .sbar-item {
+    background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; padding: 8px 16px; text-align: center; min-width: 100px;
+  }
+  .sbar-val { font-size: 1.1rem; font-weight: 700; }
+  .sbar-lbl { font-size: .65rem; color: #8b949e; margin-top: 2px; }
+  .status-on  { color: #3fb950; }
+  .status-off { color: #f85149; }
+
+  /* Bot toggle */
+  #bot-toggle {
+    margin-left: auto;
+    padding: 7px 18px; border-radius: 6px; border: none;
+    font-size: .85rem; font-weight: 700; cursor: pointer;
+    transition: all .15s;
+  }
+  #bot-toggle.start { background: #1a2d1a; color: #3fb950; border: 1px solid #3fb950; }
+  #bot-toggle.stop  { background: #2a0d0d; color: #f85149; border: 1px solid #f85149; }
+  #bot-toggle:hover { filter: brightness(1.2); }
+
+  /* Test trade knop */
+  #test-btn {
+    padding: 7px 14px; border-radius: 6px;
+    background: #0d1f35; color: #58a6ff; border: 1px solid #58a6ff;
+    font-size: .82rem; cursor: pointer;
+  }
+  #test-btn:hover { filter: brightness(1.2); }
+
+  #ts-label { font-size: .7rem; color: #8b949e; }
+
+  /* Sloten indicator */
+  .slots-wrap {
+    display: flex; gap: 6px; align-items: center;
+    font-size: .78rem; color: #8b949e;
+  }
+  .slot-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid #30363d;
+  }
+  .slot-dot.open  { background: #3fb950; border-color: #3fb950; }
+  .slot-dot.free  { background: transparent; border-color: #30363d; }
+
+  /* Content */
+  #main { padding: 20px 24px; max-width: 1100px; }
+
+  /* Posities */
+  .section-title {
+    font-size: .78rem; color: #8b949e; text-transform: uppercase;
+    letter-spacing: .06em; margin-bottom: 12px; margin-top: 20px;
+  }
+  .section-title:first-child { margin-top: 0; }
+
+  .no-trades {
+    background: #161b22; border: 1px dashed #30363d;
+    border-radius: 8px; padding: 30px; text-align: center;
+    color: #8b949e; font-size: .85rem;
+  }
+
+  /* Trade kaart */
+  .trade-card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 16px; margin-bottom: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr auto;
+    gap: 16px; align-items: center;
+  }
+  .trade-card.pnl-pos { border-left: 3px solid #3fb950; }
+  .trade-card.pnl-neg { border-left: 3px solid #f85149; }
+  .trade-card.pnl-neu { border-left: 3px solid #30363d; }
+
+  .tc-sym  { font-size: 1.1rem; font-weight: 700; }
+  .tc-sig  { font-size: .72rem; color: #8b949e; margin-top: 2px; }
+  .tc-score { font-size: .7rem; color: #d29922; margin-top: 2px; }
+
+  .tc-label { font-size: .65rem; color: #8b949e; text-transform: uppercase; letter-spacing: .04em; }
+  .tc-value { font-size: .9rem; font-weight: 600; margin-top: 3px; }
+
+  .pnl-live-pos { color: #3fb950; }
+  .pnl-live-neg { color: #f85149; }
+  .pnl-live-neu { color: #8b949e; }
+
+  /* Progress bar richting TP/SL */
+  .tp-sl-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .tp-bar-bg {
+    width: 100%; height: 4px; background: #21262d;
+    border-radius: 3px; position: relative; overflow: visible;
+  }
+  .tp-fill { height: 4px; border-radius: 3px; position: absolute; left: 0; }
+  .tp-label-row {
+    display: flex; justify-content: space-between;
+    font-size: .65rem; color: #8b949e;
+  }
+
+  /* Timer */
+  .time-wrap { text-align: right; }
+  .time-val  { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .time-lbl  { font-size: .65rem; color: #8b949e; margin-top: 2px; }
+  .time-warn { color: #d29922; }
+  .time-ok   { color: #3fb950; }
+
+  /* Refresh */
+  .refresh-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 16px;
+  }
+  .refresh-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #3fb950; animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .refresh-txt { font-size: .72rem; color: #8b949e; }
+
+  /* Test modal */
+  #test-modal {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  #test-modal.open { display: flex; }
+  .modal-box {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 24px; min-width: 320px;
+  }
+  .modal-box h3 { margin-bottom: 16px; font-size: .95rem; }
+  .modal-field { margin-bottom: 12px; }
+  .modal-field label { font-size: .75rem; color: #8b949e; display: block; margin-bottom: 4px; }
+  .modal-input {
+    width: 100%; background: #0d1117; border: 1px solid #30363d;
+    border-radius: 6px; color: #e6edf3; padding: 6px 10px; font-size: .85rem;
+  }
+  .modal-input:focus { outline: none; border-color: #58a6ff; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn-primary {
+    background: #1a2d1a; color: #3fb950; border: 1px solid #3fb950;
+    border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: .82rem;
+  }
+  .btn-cancel {
+    background: none; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: .82rem;
+  }
+  .modal-feedback { font-size: .78rem; margin-top: 8px; min-height: 18px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span>&#129302;</span>
+  <h1>Bot Posities</h1>
+  <div class="nav-links">
+    <a class="nav-link" href="sterk_quality.html">&#128202; STERK Kwaliteit</a>
+    <a class="nav-link" href="setup_intelligence.html">&#128200; Setup Intel</a>
+    <a class="nav-link" href="index.html">&#8592; Dashboard</a>
+  </div>
+  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+</header>
+
+<div id="status-bar">
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-status">---</div>
+    <div class="sbar-lbl">Bot Status</div>
+  </div>
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-open">-</div>
+    <div class="sbar-lbl">Open trades</div>
+  </div>
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-slots">-</div>
+    <div class="sbar-lbl">Vrije slots</div>
+  </div>
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-total">-</div>
+    <div class="sbar-lbl">Totaal trades</div>
+  </div>
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-winrate">-</div>
+    <div class="sbar-lbl">Winrate</div>
+  </div>
+  <div class="sbar-item">
+    <div class="sbar-val" id="sb-net">-</div>
+    <div class="sbar-lbl">Netto P&L</div>
+  </div>
+  <div style="display:flex;gap:8px;margin-left:auto">
+    <button id="test-btn" onclick="openTestModal()">+ Test trade</button>
+    <button id="bot-toggle" class="start" onclick="toggleBot()">Bot starten</button>
+  </div>
+  <div id="ts-label">laden...</div>
+</div>
+
+<div id="main">
+  <div class="refresh-bar">
+    <div class="refresh-dot"></div>
+    <span class="refresh-txt">Live — vernieuwt elke 15 seconden</span>
+  </div>
+
+  <div class="section-title">Open posities</div>
+  <div id="positions-wrap">
+    <div class="no-trades">Geen open posities. Bot moet draaien en een STERK signaal detecteren.</div>
+  </div>
+
+  <div class="section-title" style="margin-top:24px">
+    Slot status
+    <div class="slots-wrap" style="display:inline-flex;margin-left:12px" id="slots-visual"></div>
+  </div>
+
+  <div class="section-title" style="margin-top:24px">
+    Laatste 5 gesloten trades
+    <a href="sterk_quality.html" style="font-size:.7rem;color:#58a6ff;text-decoration:none;margin-left:8px">Alle trades &rarr;</a>
+  </div>
+  <div id="recent-wrap" style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.78rem">
+      <thead>
+        <tr style="border-bottom:1px solid #30363d">
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Coin</th>
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Signaal</th>
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Resultaat</th>
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">P&L</th>
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Netto</th>
+          <th style="text-align:left;padding:6px 8px;color:#8b949e;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em">Duur</th>
+        </tr>
+      </thead>
+      <tbody id="recent-tbody">
+        <tr><td colspan="6" style="color:#8b949e;padding:12px 8px;text-align:center">Nog geen gesloten trades</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Test modal -->
+<div id="test-modal">
+  <div class="modal-box">
+    <h3>Handmatig trade openen (test)</h3>
+    <div class="modal-field">
+      <label>Symbol (bijv. BTCUSDT)</label>
+      <input class="modal-input" id="m-symbol" type="text" placeholder="BTCUSDT" value="BTCUSDT"/>
+    </div>
+    <div class="modal-field">
+      <label>Signaal (optioneel)</label>
+      <input class="modal-input" id="m-signal" type="text" placeholder="MOMENTUM"/>
+    </div>
+    <div class="modal-feedback" id="m-feedback"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeTestModal()">Annuleren</button>
+      <button class="btn-primary" onclick="doTestTrade()">Trade openen</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API   = ``;
+const TOKEN = localStorage.getItem("oc_token") || "";
+const H     = { "X-API-KEY": TOKEN };
+
+// Sessie check
+(function() {
+  const token = localStorage.getItem("oc_token");
+  const exp   = localStorage.getItem("oc_expires");
+  if (!token || !exp || new Date(exp) <= new Date()) {
+    localStorage.removeItem("oc_token");
+    window.location.href = "login.html";
+  }
+})();
+
+function logout() {
+  localStorage.removeItem("oc_token");
+  localStorage.removeItem("oc_expires");
+  window.location.href = "login.html";
+}
+
+let _botRunning = false;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtPct(v, dec=2) {
+  if (v == null) return "—";
+  const s = v >= 0 ? "+" : "";
+  return `${s}${v.toFixed(dec)}%`;
+}
+function fmtUsd(v) {
+  if (v == null) return "—";
+  const s = v >= 0 ? "+" : "";
+  return `${s}$${Math.abs(v).toFixed(2)}`;
+}
+function fmtPrice(v) {
+  if (v == null) return "—";
+  return v < 1 ? v.toFixed(6) : v.toFixed(2);
+}
+function fmtAge(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}u ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+// ── Status updaten ────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const r = await fetch(`${API}/testbot/status`, { headers: H });
+    if (!r.ok) return;
+    const d = await r.json();
+    _botRunning = d.running;
+
+    const sbEl = document.getElementById("sb-status");
+    sbEl.textContent = d.running ? "AAN" : "UIT";
+    sbEl.className   = `sbar-val ${d.running ? "status-on" : "status-off"}`;
+
+    document.getElementById("sb-slots").textContent = d.free_slots ?? "—";
+    document.getElementById("sb-open").textContent  = d.n_open ?? "—";
+
+    const s = d.stats_all || {};
+    document.getElementById("sb-total").textContent   = s.total_trades ?? 0;
+    document.getElementById("sb-winrate").textContent = s.winrate_pct != null ? `${s.winrate_pct}%` : "—";
+    const netEl = document.getElementById("sb-net");
+    netEl.textContent = fmtUsd(s.total_net_usd);
+    netEl.className   = `sbar-val ${(s.total_net_usd||0) >= 0 ? "status-on" : "status-off"}`;
+
+    const tb = document.getElementById("bot-toggle");
+    tb.textContent = d.running ? "Bot stoppen" : "Bot starten";
+    tb.className   = d.running ? "stop" : "start";
+
+    // Slots visual
+    const sv = document.getElementById("slots-visual");
+    sv.innerHTML = "";
+    const max = d.config?.max_trades || 3;
+    for (let i = 0; i < max; i++) {
+      const dot = document.createElement("div");
+      dot.className = `slot-dot ${i < (d.n_open || 0) ? "open" : "free"}`;
+      sv.appendChild(dot);
+    }
+
+  } catch(e) { /* stil falen */ }
+}
+
+// ── Posities laden ────────────────────────────────────────────────────────────
+async function loadPositions() {
+  try {
+    const r = await fetch(`${API}/testbot/positions`, { headers: H });
+    if (!r.ok) return;
+    const d = await r.json();
+
+    const wrap = document.getElementById("positions-wrap");
+    if (!d.positions || d.positions.length === 0) {
+      wrap.innerHTML = `<div class="no-trades">
+        Geen open posities.
+        ${_botRunning
+          ? "Bot draait — wacht op een STERK signaal."
+          : "Start de bot via de knop rechtsboven."}
+      </div>`;
+      return;
+    }
+
+    wrap.innerHTML = d.positions.map(p => {
+      const pnl = p.pnl_pct;
+      const cardCls = pnl > 0.1 ? "pnl-pos" : pnl < -0.1 ? "pnl-neg" : "pnl-neu";
+      const pnlCls  = pnl > 0 ? "pnl-live-pos" : pnl < 0 ? "pnl-live-neg" : "pnl-live-neu";
+      const ageSec  = p.age_seconds || 0;
+      const ageH    = ageSec / 3600;
+      const timeCls = ageH > 1.5 ? "time-warn" : "time-ok";
+
+      // TP/SL progress (hoe ver richting TP of SL)
+      const ep = p.entry_price;
+      const tp = p.tp_price;
+      const sl = p.sl_price;
+      const lv = p.live_price || ep;
+      const range     = tp - sl;
+      const progress  = range > 0 ? Math.max(0, Math.min(100, (lv - sl) / range * 100)) : 50;
+      const barColor  = progress > 60 ? "#3fb950" : progress < 35 ? "#f85149" : "#d29922";
+
+      return `<div class="trade-card ${cardCls}">
+        <div>
+          <div class="tc-sym">${p.symbol.replace("USDT","")}</div>
+          <div class="tc-sig">${p.signal || "—"}</div>
+          <div class="tc-score">Score: ${p.setup_score || "—"}</div>
+        </div>
+
+        <div>
+          <div class="tc-label">Entry prijs</div>
+          <div class="tc-value">${fmtPrice(p.entry_price)}</div>
+          <div class="tc-label" style="margin-top:6px">Live prijs</div>
+          <div class="tc-value">${fmtPrice(p.live_price)}</div>
+        </div>
+
+        <div>
+          <div class="tc-label">Actuele P&L</div>
+          <div class="tc-value ${pnlCls}" style="font-size:1.1rem">${fmtPct(pnl, 2)}</div>
+          <div class="tc-value" style="font-size:.82rem;color:#8b949e">${fmtUsd(p.pnl_usd)}</div>
+        </div>
+
+        <div class="tp-sl-wrap">
+          <div class="tc-label">TP / SL</div>
+          <div class="tc-value" style="font-size:.8rem">
+            <span style="color:#3fb950">TP ${fmtPrice(p.tp_price)}</span>
+            &nbsp;|&nbsp;
+            <span style="color:#f85149">SL ${fmtPrice(p.sl_price)}</span>
+          </div>
+          <div class="tp-bar-bg" style="margin-top:8px">
+            <div class="tp-fill" style="width:${progress}%;background:${barColor}"></div>
+          </div>
+          <div class="tp-label-row">
+            <span style="color:#f85149">SL</span>
+            <span style="color:#3fb950">TP</span>
+          </div>
+        </div>
+
+        <div class="time-wrap">
+          <div class="tc-label">Open sinds</div>
+          <div class="time-val ${timeCls}">${fmtAge(ageSec)}</div>
+          <div class="time-lbl">max 2u</div>
+        </div>
+      </div>`;
+    }).join("");
+
+  } catch(e) { /* stil falen */ }
+
+  document.getElementById("ts-label").textContent =
+    `Update: ${new Date().toLocaleTimeString("nl-NL")}`;
+}
+
+// ── Bot toggle ────────────────────────────────────────────────────────────────
+async function toggleBot() {
+  const endpoint = _botRunning ? "/testbot/stop" : "/testbot/start";
+  try {
+    const r = await fetch(`${API}${endpoint}`, { method: "POST", headers: H });
+    const d = await r.json();
+    await loadStatus();
+    await loadPositions();
+  } catch(e) { alert("Fout bij bot toggle: " + e.message); }
+}
+
+// ── Test trade modal ──────────────────────────────────────────────────────────
+function openTestModal()  { document.getElementById("test-modal").classList.add("open"); }
+function closeTestModal() {
+  document.getElementById("test-modal").classList.remove("open");
+  document.getElementById("m-feedback").textContent = "";
+}
+
+async function doTestTrade() {
+  const sym = document.getElementById("m-symbol").value.trim().toUpperCase();
+  const sig = document.getElementById("m-signal").value.trim();
+  const fb  = document.getElementById("m-feedback");
+  if (!sym) { fb.textContent = "Vul een symbol in."; fb.style.color = "#f85149"; return; }
+  try {
+    const r = await fetch(`${API}/testbot/open`, {
+      method: "POST",
+      headers: { ...H, "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: sym, signal: sig, setup_score: 0 })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      fb.style.color = "#3fb950";
+      fb.textContent = `Geopend @ ${d.entry_price} (TP ${d.tp_pct}% / SL ${d.sl_pct}%)`;
+      setTimeout(() => { closeTestModal(); refresh(); }, 1500);
+    } else {
+      fb.style.color = "#f85149";
+      fb.textContent = d.msg || "Fout";
+    }
+  } catch(e) { fb.style.color = "#f85149"; fb.textContent = e.message; }
+}
+
+// ── Recente gesloten trades ───────────────────────────────────────────────────
+async function loadRecent() {
+  try {
+    const r = await fetch(`${API}/testbot/history?limit=5`, { headers: H });
+    if (!r.ok) return;
+    const d = await r.json();
+    const tbody = document.getElementById("recent-tbody");
+    if (!d.trades || !d.trades.length) return;
+
+    const reasonColors = { TP: "#3fb950", SL: "#f85149", TIMEOUT: "#d29922" };
+    tbody.innerHTML = d.trades.map(t => {
+      const reason = t.close_reason || "OPEN";
+      const color  = reasonColors[reason] || "#58a6ff";
+      const net    = t.net_pnl_usd;
+      const pnl    = t.pnl_pct;
+      const dur    = (t.entry_ts && t.close_ts)
+        ? Math.round((new Date(t.close_ts) - new Date(t.entry_ts)) / 60000)
+        : null;
+      return `<tr style="border-bottom:1px solid #21262d">
+        <td style="padding:6px 8px;font-weight:700">${(t.symbol||"").replace("USDT","")}</td>
+        <td style="padding:6px 8px;color:#8b949e;font-size:.72rem">${t.signal||"—"}</td>
+        <td style="padding:6px 8px">
+          <span style="font-size:.7rem;font-weight:700;padding:1px 6px;border-radius:3px;border:1px solid ${color};color:${color}">${reason}</span>
+        </td>
+        <td style="padding:6px 8px;color:${pnl>0?"#3fb950":pnl<0?"#f85149":"#8b949e"};font-weight:600">
+          ${pnl!=null?(pnl>=0?"+":"")+pnl.toFixed(2)+"%":"—"}
+        </td>
+        <td style="padding:6px 8px;color:${net>0?"#3fb950":net<0?"#f85149":"#8b949e"};font-weight:700">
+          ${net!=null?(net>=0?"+":"")+"$"+Math.abs(net).toFixed(2):"—"}
+        </td>
+        <td style="padding:6px 8px;color:#8b949e;font-size:.75rem">
+          ${dur!=null?(dur<60?dur+"m":Math.round(dur/60*10)/10+"u"):"—"}
+        </td>
+      </tr>`;
+    }).join("");
+  } catch(e) { /* stil falen */ }
+}
+
+// ── Auto refresh ──────────────────────────────────────────────────────────────
+async function refresh() {
+  await Promise.all([loadStatus(), loadPositions(), loadRecent()]);
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

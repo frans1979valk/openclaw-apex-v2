@@ -30,3 +30,10 @@ openclaw_config/workspace/
 openclaw_config/update-check.json
 openclaw_config/*.bak
 openclaw_config/*.bak.*
+
+# SSL-certificaten en device identity (nooit committen)
+dashboard/ssl/
+openclaw_config/identity/
+
+# Collab inbox (lokale runtime)
+collab/

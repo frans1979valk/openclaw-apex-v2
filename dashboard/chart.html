@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Chart — OpenClaw Apex</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, Arial, sans-serif; background: #0d1117; color: #e6edf3;
+         display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+  header {
+    background: #161b22; padding: 10px 18px;
+    border-bottom: 1px solid #30363d;
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 1rem; white-space: nowrap; }
+  .nav-back {
+    font-size: .75rem; color: #58a6ff; text-decoration: none;
+    border: 1px solid #30363d; border-radius: 6px; padding: 3px 8px;
+  }
+  #logout-btn {
+    font-size: .72rem; color: #8b949e; background: none;
+    border: 1px solid #30363d; border-radius: 6px; padding: 3px 8px; cursor: pointer;
+    margin-left: auto;
+  }
+  #logout-btn:hover { color: #f85149; border-color: #f85149; }
+
+  /* Controls bar */
+  #controls {
+    background: #0d1117; border-bottom: 1px solid #21262d;
+    padding: 8px 18px; display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap; flex-shrink: 0;
+  }
+  select#coin-select {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    color: #e6edf3; padding: 4px 10px; font-size: .82rem; cursor: pointer; outline: none;
+  }
+  select#coin-select:focus { border-color: #58a6ff; }
+  .tf-group { display: flex; gap: 4px; }
+  .tf-btn {
+    background: #161b22; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: .78rem;
+    transition: all .15s;
+  }
+  .tf-btn:hover { background: #21262d; color: #c9d1d9; }
+  .tf-btn.active { background: #1f4068; color: #58a6ff; border-color: #58a6ff; font-weight: 600; }
+
+  /* EMA toggle checkboxes */
+  .ema-group { display: flex; gap: 8px; align-items: center; font-size: .75rem; }
+  .ema-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .ema-dot { width: 10px; height: 3px; border-radius: 2px; }
+
+  /* Legend */
+  #legend {
+    font-size: .72rem; color: #8b949e; padding: 2px 8px;
+    background: rgba(13,17,23,.8);
+    border: 1px solid #30363d; border-radius: 4px;
+    white-space: nowrap; max-width: 500px;
+  }
+  #legend .lv { color: #e6edf3; font-weight: 600; }
+
+  /* Chart containers */
+  #charts-wrap {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative;
+  }
+  #chart-main  { flex: 3; min-height: 0; position: relative; }
+  #chart-divider {
+    height: 4px; background: #21262d; cursor: row-resize; flex-shrink: 0;
+    position: relative;
+  }
+  #chart-divider:hover { background: #30363d; }
+  #chart-score { flex: 1; min-height: 0; position: relative; }
+
+  /* Verdict info panel */
+  #verdict-panel {
+    position: absolute; right: 60px; top: 50px; z-index: 10;
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; padding: 10px 14px;
+    font-size: .75rem; min-width: 220px; max-width: 300px;
+    display: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  }
+  #verdict-panel.show { display: block; }
+  #verdict-panel h3 { font-size: .8rem; margin-bottom: 8px; color: #c9d1d9; }
+  #verdict-panel .vp-row { display: flex; justify-content: space-between; padding: 3px 0;
+    border-bottom: 1px solid #21262d; }
+  #verdict-panel .vp-row:last-child { border: none; }
+  #verdict-panel .vp-lbl { color: #8b949e; }
+  #verdict-panel .close-btn {
+    float: right; background: none; border: none; color: #8b949e;
+    cursor: pointer; font-size: 1rem; line-height: 1;
+  }
+  #verdict-panel .close-btn:hover { color: #f85149; }
+
+  /* Status bar */
+  #status-bar {
+    background: #161b22; border-top: 1px solid #30363d;
+    padding: 4px 18px; font-size: .68rem; color: #8b949e;
+    display: flex; gap: 16px; align-items: center; flex-shrink: 0;
+  }
+  #status-bar span { white-space: nowrap; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; display: inline-block; }
+
+  .spinner {
+    border: 3px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
+    width: 28px; height: 28px; animation: spin .8s linear infinite;
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  }
+  @keyframes spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <span>&#128200;</span>
+  <h1 id="header-title">Chart</h1>
+  <a class="nav-back" href="setup_intelligence.html">&#8592; Setup Intel</a>
+  <a class="nav-back" href="index.html">Dashboard</a>
+  <button id="logout-btn" onclick="logout()">Uitloggen</button>
+</header>
+
+<div id="controls">
+  <select id="coin-select" onchange="switchCoin(this.value)">
+    <option value="BTCUSDT">BTC — Bitcoin</option>
+    <option value="ETHUSDT">ETH — Ethereum</option>
+    <option value="XRPUSDT">XRP — Ripple</option>
+    <option value="SOLUSDT">SOL — Solana</option>
+    <option value="BNBUSDT">BNB</option>
+    <option value="DOGEUSDT">DOGE</option>
+    <option value="ADAUSDT">ADA</option>
+    <option value="AVAXUSDT">AVAX</option>
+    <option value="DOTUSDT">DOT</option>
+    <option value="LINKUSDT">LINK</option>
+    <option value="UNIUSDT">UNI</option>
+    <option value="AAVEUSDT">AAVE</option>
+    <option value="ATOMUSDT">ATOM</option>
+    <option value="APTUSDT">APT</option>
+    <option value="ARBUSDT">ARB</option>
+    <option value="NEARUSDT">NEAR</option>
+    <option value="INJUSDT">INJ</option>
+    <option value="XLMUSDT">XLM</option>
+    <option value="LTCUSDT">LTC</option>
+    <option value="BONKUSDT">BONK</option>
+  </select>
+
+  <div class="tf-group">
+    <span style="font-size:.72rem;color:#8b949e">Tijdframe:</span>
+    <button class="tf-btn" onclick="setTf('5m',this)">5m</button>
+    <button class="tf-btn" onclick="setTf('15m',this)">15m</button>
+    <button class="tf-btn active" onclick="setTf('1h',this)">1h</button>
+    <button class="tf-btn" onclick="setTf('4h',this)">4h</button>
+  </div>
+
+  <div class="ema-group">
+    <span style="color:#8b949e;font-size:.72rem">EMA:</span>
+    <label class="ema-toggle" title="EMA 21">
+      <input type="checkbox" id="ema21-chk" checked onchange="toggleEma(21)"/>
+      <span class="ema-dot" style="background:#ff9500"></span> 21
+    </label>
+    <label class="ema-toggle" title="EMA 55">
+      <input type="checkbox" id="ema55-chk" checked onchange="toggleEma(55)"/>
+      <span class="ema-dot" style="background:#a78bfa"></span> 55
+    </label>
+    <label class="ema-toggle" title="EMA 200">
+      <input type="checkbox" id="ema200-chk" checked onchange="toggleEma(200)"/>
+      <span class="ema-dot" style="background:#58a6ff"></span> 200
+    </label>
+    <label class="ema-toggle" title="Verdicts tonen">
+      <input type="checkbox" id="verdicts-chk" checked onchange="toggleVerdicts()"/>
+      <span style="color:#8b949e">Verdicts</span>
+    </label>
+  </div>
+
+  <div id="legend">Hover over grafiek...</div>
+</div>
+
+<div id="charts-wrap">
+  <div id="chart-main"><div class="spinner" id="spinner-main"></div></div>
+  <div id="chart-divider"></div>
+  <div id="chart-score"><div class="spinner" id="spinner-score" style="display:none"></div></div>
+  <div id="verdict-panel">
+    <button class="close-btn" onclick="closeVerdictPanel()">&#10005;</button>
+    <h3 id="vp-title">Verdict details</h3>
+    <div id="vp-body"></div>
+  </div>
+</div>
+
+<div id="status-bar">
+  <span><span class="status-dot" id="status-dot"></span> <span id="status-txt">Laden...</span></span>
+  <span id="status-candles"></span>
+  <span id="status-verdicts"></span>
+  <span id="status-ts"></span>
+</div>
+
+<script>
+// ── Auth ──────────────────────────────────────────────────────────────────────
+(function() {
+  const token = localStorage.getItem("oc_token");
+  const exp   = localStorage.getItem("oc_expires");
+  if (!token || !exp || new Date(exp) <= new Date()) {
+    localStorage.removeItem("oc_token");
+    window.location.href = "login.html";
+  }
+})();
+const TOKEN = localStorage.getItem("oc_token") || "";
+const H = {"X-API-KEY": TOKEN};
+const API = ``;
+
+function logout() {
+  localStorage.removeItem("oc_token");
+  localStorage.removeItem("oc_expires");
+  window.location.href = "login.html";
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _sym       = "BTCUSDT";
+let _tf        = "1h";
+let _chartMain = null;
+let _chartScore= null;
+let _candleSeries = null;
+let _ema21Series  = null;
+let _ema55Series  = null;
+let _ema200Series = null;
+let _scoreSeries  = null;
+let _volSeries    = null;
+let _allVerdicts  = [];
+let _showVerdicts = true;
+let _liveTimer    = null;
+let _syncLock     = false;
+
+const EMA_COLORS = { 21: "#ff9500", 55: "#a78bfa", 200: "#58a6ff" };
+const VERDICT_COLORS = {
+  "STERK":         "#3fb950",
+  "TOESTAAN":      "#58a6ff",
+  "TOESTAAN_ZWAK": "#d29922",
+  "SKIP":          "#f85149",
+  "TWIJFEL":       "#8b949e",
+  "ONBEKEND":      "#484f58",
+};
+
+// ── URL param lezen ───────────────────────────────────────────────────────────
+(function() {
+  const p = new URLSearchParams(window.location.search);
+  if (p.get("symbol")) {
+    _sym = p.get("symbol").toUpperCase();
+    const sel = document.getElementById("coin-select");
+    // Voeg optie toe als niet aanwezig
+    let found = false;
+    for (const opt of sel.options) { if (opt.value === _sym) { opt.selected = true; found = true; break; } }
+    if (!found) {
+      const opt = document.createElement("option");
+      opt.value = _sym; opt.textContent = _sym.replace("USDT",""); opt.selected = true;
+      sel.insertBefore(opt, sel.options[0]);
+    }
+  }
+  if (p.get("interval")) {
+    _tf = p.get("interval");
+    document.querySelectorAll(".tf-btn").forEach(b => {
+      b.classList.toggle("active", b.textContent.trim() === _tf);
+    });
+  }
+})();
+document.getElementById("header-title").textContent = `${_sym.replace("USDT","")} — Chart`;
+
+// ── Chart aanmaken ────────────────────────────────────────────────────────────
+function createCharts() {
+  const mainEl  = document.getElementById("chart-main");
+  const scoreEl = document.getElementById("chart-score");
+
+  const commonOpts = {
+    layout: { background: { type: "solid", color: "#0d1117" }, textColor: "#8b949e" },
+    grid: { vertLines: { color: "#21262d" }, horzLines: { color: "#21262d" } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#30363d" },
+    rightPriceScale: { borderColor: "#30363d" },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true },
+    handleScale:  { mouseWheel: true, pinch: true },
+  };
+
+  if (_chartMain)  { _chartMain.remove();  _chartMain  = null; }
+  if (_chartScore) { _chartScore.remove(); _chartScore = null; }
+
+  _chartMain = LightweightCharts.createChart(mainEl, {
+    ...commonOpts, width: mainEl.clientWidth, height: mainEl.clientHeight,
+  });
+  _chartScore = LightweightCharts.createChart(scoreEl, {
+    ...commonOpts, width: scoreEl.clientWidth, height: scoreEl.clientHeight,
+    timeScale: { ...commonOpts.timeScale, visible: true },
+  });
+
+  // Candlestick
+  _candleSeries = _chartMain.addCandlestickSeries({
+    upColor: "#3fb950", downColor: "#f85149",
+    borderUpColor: "#3fb950", borderDownColor: "#f85149",
+    wickUpColor: "#3fb950", wickDownColor: "#f85149",
+  });
+
+  // EMA lijnen
+  _ema21Series  = _chartMain.addLineSeries({
+    color: EMA_COLORS[21], lineWidth: 1.5, priceLineVisible: false,
+    lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  _ema55Series  = _chartMain.addLineSeries({
+    color: EMA_COLORS[55], lineWidth: 1.5, priceLineVisible: false,
+    lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  _ema200Series = _chartMain.addLineSeries({
+    color: EMA_COLORS[200], lineWidth: 2, priceLineVisible: false,
+    lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+
+  // Score paneel: crash score als gekleurde area
+  _scoreSeries = _chartScore.addAreaSeries({
+    lineColor: "#f0883e", topColor: "rgba(240,136,62,0.3)",
+    bottomColor: "rgba(240,136,62,0.0)", lineWidth: 1.5, priceLineVisible: false,
+  });
+
+  // Sync time scales
+  let _syncLock = false;
+  _chartMain.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (_syncLock || !range) return;
+    _syncLock = true;
+    _chartScore.timeScale().setVisibleLogicalRange(range);
+    _syncLock = false;
+  });
+  _chartScore.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (_syncLock || !range) return;
+    _syncLock = true;
+    _chartMain.timeScale().setVisibleLogicalRange(range);
+    _syncLock = false;
+  });
+
+  // Hover legend
+  _chartMain.subscribeCrosshairMove(param => updateLegend(param));
+
+  // Resize observer
+  const ro = new ResizeObserver(() => {
+    _chartMain.resize(mainEl.clientWidth, mainEl.clientHeight);
+    _chartScore.resize(scoreEl.clientWidth, scoreEl.clientHeight);
+  });
+  ro.observe(mainEl);
+  ro.observe(scoreEl);
+}
+
+// ── EMA computatie (JS, voor 5m/15m) ─────────────────────────────────────────
+function computeEmaJs(candles, period) {
+  const k   = 2 / (period + 1);
+  let ema   = candles[0].close;
+  return candles.map((c, i) => {
+    if (i === 0) ema = c.close;
+    else         ema = c.close * k + ema * (1 - k);
+    return { time: c.time, value: Math.round(ema * 10000) / 10000 };
+  });
+}
+
+// ── Binance candles (voor 5m/15m) ─────────────────────────────────────────────
+async function fetchBinanceCandles(sym, interval, limit = 400) {
+  const r = await fetch(
+    `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=${limit}`,
+    { cache: "no-store" }
+  );
+  if (!r.ok) throw new Error(`Binance ${r.status}`);
+  const data = await r.json();
+  return data.map(k => ({
+    time:   Math.floor(k[0] / 1000),
+    open:   parseFloat(k[1]),
+    high:   parseFloat(k[2]),
+    low:    parseFloat(k[3]),
+    close:  parseFloat(k[4]),
+    volume: parseFloat(k[5]),
+  }));
+}
+
+// ── Verdict markers ───────────────────────────────────────────────────────────
+function buildMarkers(verdicts) {
+  if (!_showVerdicts) return [];
+  return verdicts.map(v => {
+    const color = VERDICT_COLORS[v.verdict] || "#8b949e";
+    const isSkip = v.verdict === "SKIP";
+    const pnlStr = v.pnl_1h != null
+      ? ` ${v.pnl_1h >= 0 ? "+" : ""}${v.pnl_1h.toFixed(2)}%`
+      : "";
+    const label = (v.verdict === "TOESTAAN_ZWAK" ? "ZWAK" : (v.verdict || "?")) + pnlStr;
+    return {
+      time:     v.time,
+      position: isSkip ? "aboveBar" : "belowBar",
+      color:    color,
+      shape:    isSkip ? "arrowDown" : "arrowUp",
+      text:     label,
+      id:       `v_${v.time}`,
+    };
+  });
+}
+
+// ── Legend updaten ─────────────────────────────────────────────────────────────
+function updateLegend(param) {
+  const el = document.getElementById("legend");
+  if (!param || !param.time || !param.seriesData || !_candleSeries) {
+    el.innerHTML = "Hover over grafiek voor OHLCV waarden...";
+    return;
+  }
+  const c = param.seriesData.get(_candleSeries);
+  if (!c) return;
+  const d = new Date(param.time * 1000).toLocaleString("nl-NL", {timeZone: "UTC"});
+  const chg = c.open > 0 ? ((c.close - c.open) / c.open * 100).toFixed(2) : "0";
+  const chgColor = parseFloat(chg) >= 0 ? "#3fb950" : "#f85149";
+  let html = `<span style="color:#8b949e">${d}</span>&nbsp; `;
+  html += `O:<span class="lv">$${c.open.toFixed(getPriceDecimals(c.close))}</span> `;
+  html += `H:<span class="lv">$${c.high.toFixed(getPriceDecimals(c.close))}</span> `;
+  html += `L:<span class="lv">$${c.low.toFixed(getPriceDecimals(c.close))}</span> `;
+  html += `C:<span class="lv">$${c.close.toFixed(getPriceDecimals(c.close))}</span> `;
+  html += `<span style="color:${chgColor}">${parseFloat(chg)>=0?"+":""}${chg}%</span>`;
+
+  // EMA waarden
+  if (_ema21Series) {
+    const e21 = param.seriesData.get(_ema21Series);
+    const e55 = param.seriesData.get(_ema55Series);
+    const e200= param.seriesData.get(_ema200Series);
+    if (e21)  html += ` &nbsp;<span style="color:${EMA_COLORS[21]}">EMA21:${e21.value.toFixed(getPriceDecimals(c.close))}</span>`;
+    if (e55)  html += ` <span style="color:${EMA_COLORS[55]}">EMA55:${e55.value.toFixed(getPriceDecimals(c.close))}</span>`;
+    if (e200) html += ` <span style="color:${EMA_COLORS[200]}">EMA200:${e200.value.toFixed(getPriceDecimals(c.close))}</span>`;
+  }
+  el.innerHTML = html;
+}
+
+function getPriceDecimals(price) {
+  if (!price) return 4;
+  if (price >= 10000) return 1;
+  if (price >= 100)   return 2;
+  if (price >= 1)     return 4;
+  return 6;
+}
+
+// ── Verdict panel ─────────────────────────────────────────────────────────────
+function showVerdictPanel(v) {
+  const panel = document.getElementById("verdict-panel");
+  const color = VERDICT_COLORS[v.verdict] || "#8b949e";
+  document.getElementById("vp-title").innerHTML =
+    `<span style="color:${color}">${v.verdict}</span> — ${(v.signal||"?")} &nbsp;
+     <span style="color:#8b949e;font-weight:400;font-size:.72rem">${new Date(v.time*1000).toLocaleString("nl-NL",{timeZone:"UTC"})}</span>`;
+
+  const dec = getPriceDecimals(v.entry_price);
+  const pnlColor = v.pnl_1h != null ? (v.pnl_1h >= 0 ? "#3fb950" : "#f85149") : "#8b949e";
+  const rows = [
+    ["Entry prijs",   v.entry_price != null ? `$${v.entry_price.toFixed(dec)}` : "—"],
+    ["P&L na 1h",     v.pnl_1h != null ? `<span style="color:${pnlColor}">${v.pnl_1h>=0?"+":""}${v.pnl_1h.toFixed(3)}%</span>` : "—"],
+    ["P&L na 4h",     v.pnl_4h != null ? `<span style="color:${v.pnl_4h>=0?"#3fb950":"#f85149"}">${v.pnl_4h>=0?"+":""}${v.pnl_4h.toFixed(3)}%</span>` : "—"],
+    ["RSI op moment", v.rsi != null ? v.rsi.toFixed(1) : "—"],
+    ["Win% historisch", v.win_pct != null ? `${v.win_pct.toFixed(1)}%` : "—"],
+    ["Gem. P&L hist.", v.avg_1h_hist != null ? `${v.avg_1h_hist>=0?"+":""}${v.avg_1h_hist.toFixed(3)}%` : "—"],
+    ["Historisch (n)", v.n ?? "—"],
+  ];
+  document.getElementById("vp-body").innerHTML = rows.map(([l,val]) =>
+    `<div class="vp-row"><span class="vp-lbl">${l}</span><span>${val}</span></div>`
+  ).join("") + (v.reden ? `<div style="margin-top:6px;font-size:.68rem;color:#8b949e;line-height:1.4">${v.reden}</div>` : "");
+  panel.classList.add("show");
+}
+
+function closeVerdictPanel() {
+  document.getElementById("verdict-panel").classList.remove("show");
+}
+
+// ── Data laden ────────────────────────────────────────────────────────────────
+async function loadData() {
+  clearLiveUpdates();
+  document.getElementById("spinner-main").style.display = "block";
+  document.getElementById("status-dot").style.background = "#d29922";
+  document.getElementById("status-txt").textContent = "Laden...";
+  document.getElementById("verdict-panel").classList.remove("show");
+
+  createCharts();
+
+  try {
+    let candles, ema21Data = [], ema55Data = [], ema200Data = [];
+
+    if (_tf === "5m" || _tf === "15m") {
+      // Binance direct
+      candles = await fetchBinanceCandles(_sym, _tf, _tf === "5m" ? 400 : 300);
+      // EMA in JS berekenen
+      if (candles.length > 200) {
+        ema21Data  = computeEmaJs(candles, 21);
+        ema55Data  = computeEmaJs(candles, 55);
+        ema200Data = computeEmaJs(candles, 200);
+      }
+      _allVerdicts = [];  // geen verdict markers voor 5m/15m
+      if (_scoreSeries) _scoreSeries.setData([]);
+
+    } else {
+      // Backend data (1h/4h)
+      const r = await fetch(`${API}/chart/markers/${_sym}?interval=${_tf}&limit=400`, {headers: H});
+      if (!r.ok) throw new Error(`chart/markers ${r.status}`);
+      const data = await r.json();
+
+      candles = data.candles || [];
+
+      // EMA's uit backend (alleen 1h)
+      if (data.emas && data.emas.length) {
+        ema21Data  = data.emas.map(e => e.ema21  != null ? {time: e.time, value: e.ema21}  : null).filter(Boolean);
+        ema55Data  = data.emas.map(e => e.ema55  != null ? {time: e.time, value: e.ema55}  : null).filter(Boolean);
+        ema200Data = data.emas.map(e => e.ema200 != null ? {time: e.time, value: e.ema200} : null).filter(Boolean);
+      } else if (candles.length > 200) {
+        // Fallback: berekenen in JS (voor 4h)
+        ema21Data  = computeEmaJs(candles, 21);
+        ema55Data  = computeEmaJs(candles, 55);
+        ema200Data = computeEmaJs(candles, 200);
+      }
+
+      // Verdicts
+      _allVerdicts = data.verdicts || [];
+
+      // Crash scores in score paneel
+      if (data.crash_scores && data.crash_scores.length) {
+        const scoreData = data.crash_scores.map(s => ({time: s.time, value: s.score}));
+        _scoreSeries.setData(scoreData);
+        document.getElementById("status-verdicts").textContent =
+          `Crash scores: ${scoreData.length}`;
+      } else {
+        _scoreSeries.setData([]);
+      }
+
+      document.getElementById("status-verdicts").textContent =
+        `Verdicts: ${_allVerdicts.length}`;
+    }
+
+    // Candles in grafiek zetten
+    _candleSeries.setData(candles);
+
+    // EMA's zetten
+    if (ema21Data.length)  _ema21Series.setData(ema21Data);
+    if (ema55Data.length)  _ema55Series.setData(ema55Data);
+    if (ema200Data.length) _ema200Series.setData(ema200Data);
+
+    // EMA visibility toepassen
+    applyEmaVisibility();
+
+    // Verdict markers zetten
+    if (_allVerdicts.length) {
+      const markers = buildMarkers(_allVerdicts);
+      _candleSeries.setMarkers(markers);
+
+      // Click op marker: toon detail panel
+      _chartMain.subscribeClick(param => {
+        if (!param || !param.time) return;
+        // Zoek dichtstbijzijnde verdict (binnen 1 candle)
+        const interval_secs = {"1h": 3600, "4h": 14400, "5m": 300, "15m": 900}[_tf] || 3600;
+        const nearby = _allVerdicts.find(v => Math.abs(v.time - param.time) <= interval_secs);
+        if (nearby) showVerdictPanel(nearby);
+        else closeVerdictPanel();
+      });
+    }
+
+    // Status
+    document.getElementById("status-candles").textContent = `Candles: ${candles.length}`;
+    document.getElementById("status-ts").textContent = new Date().toLocaleTimeString("nl-NL");
+    document.getElementById("status-dot").style.background = "#3fb950";
+    document.getElementById("status-txt").textContent = `${_sym.replace("USDT","")} — ${_tf}`;
+    document.getElementById("spinner-main").style.display = "none";
+
+    // Live updates starten (alleen voor 5m/15m via Binance)
+    if (_tf === "5m" || _tf === "15m") startLiveUpdates();
+
+  } catch(e) {
+    document.getElementById("status-dot").style.background = "#f85149";
+    document.getElementById("status-txt").textContent = `Fout: ${e.message}`;
+    document.getElementById("spinner-main").style.display = "none";
+    console.error("Chart fout:", e);
+  }
+}
+
+// ── EMA visibility ───────────────────────────────────────────────────────────
+function applyEmaVisibility() {
+  const show21  = document.getElementById("ema21-chk").checked;
+  const show55  = document.getElementById("ema55-chk").checked;
+  const show200 = document.getElementById("ema200-chk").checked;
+  if (_ema21Series)  _ema21Series.applyOptions({visible: show21});
+  if (_ema55Series)  _ema55Series.applyOptions({visible: show55});
+  if (_ema200Series) _ema200Series.applyOptions({visible: show200});
+}
+
+function toggleEma(period) { applyEmaVisibility(); }
+
+function toggleVerdicts() {
+  _showVerdicts = document.getElementById("verdicts-chk").checked;
+  if (_candleSeries) {
+    _candleSeries.setMarkers(_showVerdicts ? buildMarkers(_allVerdicts) : []);
+  }
+}
+
+// ── Live updates (Binance, voor 5m/15m) ──────────────────────────────────────
+function startLiveUpdates() {
+  const interval_ms = _tf === "5m" ? 10000 : 20000;
+  _liveTimer = setInterval(async () => {
+    try {
+      const fresh = await fetchBinanceCandles(_sym, _tf, 5);
+      if (!fresh.length || !_candleSeries) return;
+      for (const c of fresh) _candleSeries.update(c);
+      document.getElementById("status-ts").textContent = new Date().toLocaleTimeString("nl-NL");
+    } catch(e) {}
+  }, interval_ms);
+}
+
+function clearLiveUpdates() {
+  if (_liveTimer) { clearInterval(_liveTimer); _liveTimer = null; }
+}
+
+// ── Switches ──────────────────────────────────────────────────────────────────
+function switchCoin(sym) {
+  _sym = sym;
+  document.getElementById("header-title").textContent = `${_sym.replace("USDT","")} — Chart`;
+  history.replaceState({}, "", `?symbol=${_sym}&interval=${_tf}`);
+  loadData();
+}
+
+function setTf(tf, btn) {
+  _tf = tf;
+  document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  history.replaceState({}, "", `?symbol=${_sym}&interval=${_tf}`);
+  loadData();
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
