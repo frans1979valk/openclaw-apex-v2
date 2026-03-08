@@ -22,7 +22,8 @@ from pydantic import BaseModel
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-CONTROL_API_URL = os.environ.get("CONTROL_API_URL", "http://control_api:8080")
+CONTROL_API_URL       = os.environ.get("CONTROL_API_URL", "http://control_api:8080")
+INDICATOR_ENGINE_URL  = os.environ.get("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
 CONTROL_API_TOKEN = os.environ.get("CONTROL_API_TOKEN", "")
 TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
@@ -419,6 +420,149 @@ async def cc_logs(
         lines = lines[-limit:]
 
     return {"lines": lines, "total": len(lines), "level_filter": level}
+
+
+# ── Indicator Engine proxy (read-only, geen extra auth nodig) ────────────────
+
+def _ie_get(path: str, params: dict = None):
+    try:
+        r = requests.get(f"{INDICATOR_ENGINE_URL}{path}", params=params, timeout=5)
+        return r.json()
+    except Exception as e:
+        raise HTTPException(502, f"indicator_engine onbereikbaar: {e}")
+
+
+@app.get("/cc/mode/current")
+async def cc_mode_current(request: Request, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get("/mode/current")
+
+
+@app.get("/cc/mode/log")
+async def cc_mode_log(request: Request, limit: int = 50, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get("/mode/log", {"limit": limit})
+
+
+@app.get("/cc/short/status")
+async def cc_short_status(request: Request, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get("/short/status")
+
+
+@app.get("/cc/short/log")
+async def cc_short_log(request: Request, since: str = None, limit: int = 100, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    params = {"limit": limit}
+    if since:
+        params["since"] = since
+    return _ie_get("/short/log", params)
+
+
+@app.get("/cc/alerts/high-impact")
+async def cc_alerts(request: Request, severity: str = None, limit: int = 50, since: str = None, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    params = {"limit": limit}
+    if severity:
+        params["severity"] = severity
+    if since:
+        params["since"] = since
+    return _ie_get("/alerts/high-impact", params)
+
+
+@app.get("/cc/realtime/health")
+async def cc_realtime_health(request: Request, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get("/realtime/health")
+
+
+@app.get("/cc/short/replay/jobs")
+async def cc_replay_jobs(request: Request, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get("/short/replay/jobs")
+
+
+@app.get("/cc/short/replay/result/{job_id}")
+async def cc_replay_result(request: Request, job_id: str, authorization: str | None = Header(None)):
+    _validate_session(authorization)
+    return _ie_get(f"/short/replay/result/{job_id}")
+
+
+# ── Indicator Engine actions (met 2-step confirm + audit) ────────────────────
+
+class ConfirmedAction(BaseModel):
+    reason: str = ""
+    confirm: str = ""   # moet "CONFIRM" zijn
+
+
+def _ie_post(path: str, params: dict = None):
+    try:
+        r = requests.post(f"{INDICATOR_ENGINE_URL}{path}", params=params, timeout=5)
+        return r.json()
+    except Exception as e:
+        raise HTTPException(502, f"indicator_engine onbereikbaar: {e}")
+
+
+@app.post("/cc/mode/reset")
+async def cc_mode_reset(request: Request, body: ConfirmedAction, authorization: str | None = Header(None)):
+    email = _validate_session(authorization)
+    ip = request.client.host if request.client else "unknown"
+    if body.confirm != "CONFIRM":
+        raise HTTPException(400, "Bevestiging vereist: confirm='CONFIRM'")
+    result = _ie_post("/mode/reset", {"reason": body.reason or "Dashboard reset"})
+    _audit("mode_reset", email, ip, "ok", body.reason or "geen reden")
+    return result
+
+
+@app.post("/cc/short/enable")
+async def cc_short_enable(request: Request, body: ConfirmedAction, authorization: str | None = Header(None)):
+    email = _validate_session(authorization)
+    ip = request.client.host if request.client else "unknown"
+    if body.confirm != "CONFIRM":
+        raise HTTPException(400, "Bevestiging vereist")
+    result = _ie_post("/short/enable", {"reason": body.reason or "Dashboard actie"})
+    _audit("short_enable", email, ip, "ok", body.reason or "geen reden")
+    return result
+
+
+@app.post("/cc/short/disable")
+async def cc_short_disable(request: Request, body: ConfirmedAction, authorization: str | None = Header(None)):
+    email = _validate_session(authorization)
+    ip = request.client.host if request.client else "unknown"
+    if body.confirm != "CONFIRM":
+        raise HTTPException(400, "Bevestiging vereist")
+    result = _ie_post("/short/disable", {"reason": body.reason or "Dashboard actie"})
+    _audit("short_disable", email, ip, "ok", body.reason or "geen reden")
+    return result
+
+
+class ReplayRunBody(BaseModel):
+    symbol:        str   = "BTCUSDT"
+    days:          int   = 90
+    sweep:         bool  = False
+    delta_thr:     float = -1.5
+    vol_ratio_thr: float = 1.8
+    trail_pct:     float = 1.0
+    confirm:       str   = ""
+
+
+@app.post("/cc/short/replay/run")
+async def cc_replay_run(request: Request, body: ReplayRunBody, authorization: str | None = Header(None)):
+    email = _validate_session(authorization)
+    ip = request.client.host if request.client else "unknown"
+    if body.confirm != "CONFIRM":
+        raise HTTPException(400, "Bevestiging vereist")
+    try:
+        r = requests.post(
+            f"{INDICATOR_ENGINE_URL}/short/replay/run",
+            json=body.model_dump(exclude={"confirm"}),
+            timeout=10,
+        )
+        result = r.json()
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    _audit("replay_run", email, ip, "ok", f"symbol={body.symbol} days={body.days} sweep={body.sweep}")
+    return result
 
 
 # ── Health ──────────────────────────────────────────────────────────────────

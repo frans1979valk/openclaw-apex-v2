@@ -56,6 +56,19 @@ select,input[type="text"]{background:#0d1117;border:1px solid #30363d;color:#c9d
 .refresh-note{color:#484f58;font-size:0.7em;float:right}
 .empty{color:#484f58;font-style:italic;padding:12px 0}
 #oracle-result{max-height:300px;overflow-y:auto;font-size:0.85em;background:#0d1117;padding:10px;border-radius:6px;margin-top:10px;white-space:pre-wrap;display:none}
+.badge.orange{background:#b35900;color:#fff}
+.badge.panic{background:#da3633;color:#fff;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.alert-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #21262d;font-size:0.82em}
+.alert-row:last-child{border-bottom:none}
+.alert-sym{font-weight:700;min-width:80px}
+.alert-msg{color:#8b949e;flex:1}
+.alert-ts{color:#484f58;font-size:0.75em;white-space:nowrap}
+.confirm-bar{display:flex;gap:6px;align-items:center;margin-top:8px;padding:8px;background:#0d1117;border:1px solid #da3633;border-radius:6px}
+.confirm-bar input{background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:4px;font-size:0.8em;width:180px}
+.ws-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:4px}
+.ws-dot.ok{background:#3fb950}
+.ws-dot.err{background:#f85149;animation:pulse 1s infinite}
 </style>
 </head>
 <body>
@@ -130,6 +143,93 @@ select,input[type="text"]{background:#0d1117;border:1px solid #30363d;color:#c9d
     </div>
     <div id="controlResult" style="font-size:0.85em;color:#8b949e;margin-top:8px"></div>
   </div>
+
+  <!-- MODE + SHORT STATUS -->
+  <div class="card" id="modeCard">
+    <h2>Mode & Short Status <span class="refresh-note" id="modeTime"></span></h2>
+    <div id="modeContent"><span class="empty">Laden...</span></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-action" onclick="showConfirm('modeReset')">Mode Reset</button>
+      <button class="btn-action" onclick="showConfirm('shortEnable')">Short Enable</button>
+      <button class="btn-action btn-danger" onclick="showConfirm('shortDisable')">Short Disable</button>
+    </div>
+    <div id="confirmModeReset" class="confirm-bar" style="display:none">
+      <span style="font-size:0.82em;color:#f85149">Reset panic/crash naar normal?</span>
+      <input type="text" id="reasonModeReset" placeholder="Reden (optioneel)">
+      <button class="btn btn-confirm" onclick="doModeReset()">Bevestig</button>
+      <button class="btn btn-reject" onclick="hideConfirm('modeReset')">Annuleer</button>
+    </div>
+    <div id="confirmShortEnable" class="confirm-bar" style="display:none">
+      <span style="font-size:0.82em;color:#3fb950">Short engine activeren?</span>
+      <input type="text" id="reasonShortEnable" placeholder="Reden">
+      <button class="btn btn-confirm" onclick="doShortEnable()">Bevestig</button>
+      <button class="btn btn-reject" onclick="hideConfirm('shortEnable')">Annuleer</button>
+    </div>
+    <div id="confirmShortDisable" class="confirm-bar" style="display:none">
+      <span style="font-size:0.82em;color:#f85149">Short engine uitschakelen?</span>
+      <input type="text" id="reasonShortDisable" placeholder="Reden">
+      <button class="btn btn-confirm" onclick="doShortDisable()">Bevestig</button>
+      <button class="btn btn-reject" onclick="hideConfirm('shortDisable')">Annuleer</button>
+    </div>
+    <div id="modeActionResult" style="font-size:0.82em;color:#8b949e;margin-top:6px"></div>
+  </div>
+
+  <!-- WS HEALTH CARD -->
+  <div class="card" id="wsHealthCard">
+    <h2>WS Feed Health <span class="refresh-note" id="wsHealthTime"></span></h2>
+    <div id="wsHealthContent"><span class="empty">Laden...</span></div>
+  </div>
+
+  <!-- HIGH-IMPACT ALERTS WIDGET -->
+  <div class="card full" id="alertsCard">
+    <h2>High-Impact Alerts <span class="refresh-note" id="alertsTime"></span></h2>
+    <div class="controls">
+      <select id="alertSeverity" onchange="loadAlerts()">
+        <option value="">Alle severity</option>
+        <option value="extreme">Extreme</option>
+        <option value="major">Major</option>
+        <option value="minor">Minor</option>
+      </select>
+    </div>
+    <div id="alertsContent"><span class="empty">Laden...</span></div>
+  </div>
+
+  <!-- SHORT EXECUTION MONITOR -->
+  <div class="card full" id="shortMonitorCard">
+    <h2>Short Execution Monitor <span class="refresh-note" id="shortMonitorTime"></span></h2>
+    <div id="shortMonitorContent"><span class="empty">Laden...</span></div>
+  </div>
+
+  <!-- SHORT LOG TABLE -->
+  <div class="card full" id="shortLogCard">
+    <h2>Short Log <span class="refresh-note" id="shortLogTime"></span></h2>
+    <div id="shortLogContent"><span class="empty">Laden...</span></div>
+  </div>
+
+  <!-- REPLAY / BACKTEST PANEL -->
+  <div class="card full" id="replayCard">
+    <h2>Short Replay / Backtest</h2>
+    <div class="controls" style="flex-wrap:wrap;gap:8px">
+      <input type="text" id="rpSymbol" placeholder="BTCUSDT" value="BTCUSDT" style="width:110px">
+      <select id="rpDays"><option value="30">30d</option><option value="60">60d</option><option value="90" selected>90d</option></select>
+      <label style="font-size:0.82em;color:#8b949e;display:flex;align-items:center;gap:4px">
+        <input type="checkbox" id="rpSweep"> Sweep (81 configs)
+      </label>
+      <input type="number" id="rpDelta" placeholder="delta_thr" value="-1.5" step="0.1" style="width:90px">
+      <input type="number" id="rpVol" placeholder="vol_ratio" value="1.8" step="0.1" style="width:90px">
+      <input type="number" id="rpTrail" placeholder="trail_pct" value="1.0" step="0.1" style="width:90px">
+      <button class="btn-action" onclick="showConfirm('replayRun')">Start Replay</button>
+    </div>
+    <div id="confirmReplayRun" class="confirm-bar" style="display:none">
+      <span style="font-size:0.82em;color:#d29922">Backtest starten?</span>
+      <button class="btn btn-confirm" onclick="doReplayRun()">Bevestig</button>
+      <button class="btn btn-reject" onclick="hideConfirm('replayRun')">Annuleer</button>
+    </div>
+    <div id="replayStatus" style="font-size:0.82em;color:#8b949e;margin-top:8px"></div>
+    <div id="replayJobs" style="margin-top:10px"></div>
+    <div id="replayResult" style="margin-top:10px"></div>
+  </div>
+
 </div>
 
 <script>
@@ -345,6 +445,271 @@ function logout() {
 }
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTs(ts) { if (!ts) return '—'; try { return new Date(ts).toLocaleTimeString(); } catch { return ts; } }
+function fmtPct(v) { if (v == null) return '—'; const n = parseFloat(v); return (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; }
+
+// ── Mode & Short Status ──
+async function loadModeStatus() {
+  try {
+    const [rm, rs] = await Promise.all([
+      api('GET', '/cc/mode/current'),
+      api('GET', '/cc/short/status'),
+    ]);
+    if (!rm || !rs) return;
+    const m = await rm.json();
+    const s = await rs.json();
+    const modeBadge = m.mode === 'normal' ? 'green' : m.mode === 'panic' ? 'panic' : 'red';
+    let html = '';
+    html += `<div class="kv"><span class="k">Systeem Mode</span><span class="v"><span class="badge ${modeBadge}">${(m.mode||'?').toUpperCase()}</span></span></div>`;
+    html += `<div class="kv"><span class="k">Short Engine</span><span class="v"><span class="badge ${s.enabled?'green':'gray'}">${s.enabled?'ACTIEF':'UIT'}</span></span></div>`;
+    html += `<div class="kv"><span class="k">Open Shorts</span><span class="v">${s.open_positions ?? '—'} / ${s.max_positions ?? '—'}</span></div>`;
+    const dd = s.day_dd_pct ?? 0;
+    html += `<div class="kv"><span class="k">Day DD</span><span class="v" style="color:${dd<=-3?'#f85149':dd<=-1?'#d29922':'#3fb950'}">${fmtPct(dd)}</span></div>`;
+    html += `<div class="kv"><span class="k">Day Trades</span><span class="v">${s.day_trades ?? 0}</span></div>`;
+    if (m.reason) html += `<div class="kv"><span class="k">Reden</span><span class="v" style="color:#8b949e;font-size:0.85em">${escHtml(m.reason)}</span></div>`;
+    document.getElementById('modeContent').innerHTML = html;
+    document.getElementById('modeTime').textContent = new Date().toLocaleTimeString();
+  } catch(e) { document.getElementById('modeContent').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── WS Health ──
+async function loadWsHealth() {
+  try {
+    const r = await api('GET', '/cc/realtime/health');
+    if (!r) return;
+    const d = await r.json();
+    const conn = d.ws_connected;
+    const dot = `<span class="ws-dot ${conn?'ok':'err'}"></span>`;
+    let html = '';
+    html += `<div class="kv"><span class="k">WebSocket</span><span class="v">${dot}${conn?'Verbonden':'Verbroken'}</span></div>`;
+    if (d.fallback_mode) html += `<div class="kv"><span class="k">Fallback</span><span class="v"><span class="badge yellow">REST POLLING</span></span></div>`;
+    html += `<div class="kv"><span class="k">Coins tracking</span><span class="v">${d.symbols_tracking ?? '—'}</span></div>`;
+    html += `<div class="kv"><span class="k">Drops (1h)</span><span class="v">${d.drops_1h ?? 0}</span></div>`;
+    html += `<div class="kv"><span class="k">Max lag</span><span class="v">${d.max_lag_ms != null ? d.max_lag_ms + ' ms' : '—'}</span></div>`;
+    document.getElementById('wsHealthContent').innerHTML = html;
+    document.getElementById('wsHealthTime').textContent = new Date().toLocaleTimeString();
+  } catch(e) { document.getElementById('wsHealthContent').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── Alerts ──
+async function loadAlerts() {
+  try {
+    const sev = document.getElementById('alertSeverity').value;
+    const url = '/cc/alerts/high-impact?limit=30' + (sev ? '&severity=' + sev : '');
+    const r = await api('GET', url);
+    if (!r) return;
+    const d = await r.json();
+    const alerts = d.alerts || d || [];
+    if (!alerts.length) {
+      document.getElementById('alertsContent').innerHTML = '<span class="empty">Geen alerts</span>';
+      return;
+    }
+    const sevColor = {extreme:'red', major:'orange', minor:'yellow'};
+    let html = '';
+    alerts.slice(0, 20).forEach(a => {
+      const svc = sevColor[a.severity] || 'gray';
+      const arrow = a.delta_pct > 0 ? '▲' : '▼';
+      const deltaStyle = a.delta_pct > 0 ? 'color:#3fb950' : 'color:#f85149';
+      html += `<div class="alert-row">
+        <span class="alert-sym">${escHtml(a.symbol||'?')}</span>
+        <span class="badge ${svc}">${(a.severity||'?').toUpperCase()}</span>
+        <span style="${deltaStyle};font-weight:600">${arrow}${Math.abs(parseFloat(a.delta_pct||0)).toFixed(2)}%</span>
+        <span style="color:#8b949e;font-size:0.8em">vol×${parseFloat(a.vol_ratio||0).toFixed(1)}</span>
+        <span class="alert-msg">${escHtml(a.message||a.kind||'')}</span>
+        <span class="alert-ts">${fmtTs(a.ts)}</span>
+      </div>`;
+    });
+    document.getElementById('alertsContent').innerHTML = html;
+    document.getElementById('alertsTime').textContent = new Date().toLocaleTimeString();
+  } catch(e) { document.getElementById('alertsContent').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── Short Monitor ──
+async function loadShortMonitor() {
+  try {
+    const r = await api('GET', '/cc/short/status');
+    if (!r) return;
+    const d = await r.json();
+    const pos = d.positions || [];
+    if (!pos.length) {
+      document.getElementById('shortMonitorContent').innerHTML = '<span class="empty">Geen open short posities</span>';
+      document.getElementById('shortMonitorTime').textContent = new Date().toLocaleTimeString();
+      return;
+    }
+    let html = '<table><tr><th>Symbol</th><th>Entry</th><th>Prijs nu</th><th>P&L</th><th>MAE</th><th>MFE</th><th>Duur</th><th>Status</th></tr>';
+    pos.forEach(p => {
+      const pnl = parseFloat(p.pnl_pct || 0);
+      const pnlStyle = pnl >= 0 ? 'color:#3fb950' : 'color:#f85149';
+      html += `<tr>
+        <td><strong>${escHtml(p.symbol||'?')}</strong></td>
+        <td>$${parseFloat(p.entry_price||0).toFixed(4)}</td>
+        <td>$${parseFloat(p.current_price||0).toFixed(4)}</td>
+        <td style="${pnlStyle}">${fmtPct(pnl)}</td>
+        <td style="color:#f85149">${fmtPct(p.mae_pct)}</td>
+        <td style="color:#3fb950">${fmtPct(p.mfe_pct)}</td>
+        <td>${p.duration_s != null ? Math.round(p.duration_s/60) + 'm' : '—'}</td>
+        <td><span class="badge blue">${escHtml(p.status||'open')}</span></td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('shortMonitorContent').innerHTML = html;
+    document.getElementById('shortMonitorTime').textContent = new Date().toLocaleTimeString();
+  } catch(e) { document.getElementById('shortMonitorContent').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── Short Log ──
+async function loadShortLog() {
+  try {
+    const r = await api('GET', '/cc/short/log?limit=30');
+    if (!r) return;
+    const d = await r.json();
+    const entries = d.log || d.entries || d || [];
+    if (!entries.length) {
+      document.getElementById('shortLogContent').innerHTML = '<span class="empty">Geen short log entries</span>';
+      document.getElementById('shortLogTime').textContent = new Date().toLocaleTimeString();
+      return;
+    }
+    let html = '<table><tr><th>Tijd</th><th>Symbol</th><th>Actie</th><th>Reden</th><th>Prijs</th><th>P&L</th></tr>';
+    entries.slice(0, 30).forEach(e => {
+      const pnl = e.pnl_pct != null ? parseFloat(e.pnl_pct) : null;
+      const pnlStyle = pnl != null ? (pnl >= 0 ? 'color:#3fb950' : 'color:#f85149') : '';
+      const actionBadge = e.action === 'open' ? 'blue' : e.action === 'close' ? 'green' : 'gray';
+      html += `<tr>
+        <td style="color:#8b949e">${fmtTs(e.ts)}</td>
+        <td><strong>${escHtml(e.symbol||'?')}</strong></td>
+        <td><span class="badge ${actionBadge}">${escHtml(e.action||'?')}</span></td>
+        <td style="color:#8b949e;font-size:0.85em">${escHtml(e.reason||'—')}</td>
+        <td>${e.price != null ? '$'+parseFloat(e.price).toFixed(4) : '—'}</td>
+        <td style="${pnlStyle}">${pnl != null ? fmtPct(pnl) : '—'}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('shortLogContent').innerHTML = html;
+    document.getElementById('shortLogTime').textContent = new Date().toLocaleTimeString();
+  } catch(e) { document.getElementById('shortLogContent').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── Replay Jobs ──
+async function loadReplayJobs() {
+  try {
+    const r = await api('GET', '/cc/short/replay/jobs');
+    if (!r) return;
+    const d = await r.json();
+    const jobs = d.jobs || d || [];
+    if (!jobs.length) {
+      document.getElementById('replayJobs').innerHTML = '<span class="empty" style="font-size:0.82em">Geen jobs</span>';
+      return;
+    }
+    let html = '<table><tr><th>Job ID</th><th>Symbol</th><th>Status</th><th>Aangemaakt</th><th>Actie</th></tr>';
+    jobs.slice(0, 10).forEach(j => {
+      const stBadge = j.status === 'done' ? 'green' : j.status === 'running' ? 'blue' : 'gray';
+      html += `<tr>
+        <td style="font-size:0.8em;color:#8b949e">${escHtml(j.job_id||'?')}</td>
+        <td>${escHtml(j.symbol||'?')}</td>
+        <td><span class="badge ${stBadge}">${escHtml(j.status||'?')}</span></td>
+        <td style="color:#8b949e">${fmtTs(j.created_at)}</td>
+        <td><button class="btn-action" style="padding:2px 8px;font-size:0.75em" onclick="loadReplayResult('${escHtml(j.job_id||'')}')">Resultaat</button></td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('replayJobs').innerHTML = html;
+  } catch(e) {}
+}
+
+async function loadReplayResult(jobId) {
+  document.getElementById('replayResult').innerHTML = '<span class="empty" style="font-size:0.82em">Laden...</span>';
+  try {
+    const r = await api('GET', '/cc/short/replay/result/' + jobId);
+    if (!r) return;
+    const d = await r.json();
+    if (d.status !== 'done') {
+      document.getElementById('replayResult').innerHTML = `<span class="empty">Status: ${d.status}</span>`;
+      return;
+    }
+    const res = d.result || {};
+    let html = '<div style="font-size:0.85em;margin-top:6px">';
+    if (res.sweep) {
+      const top5 = res.top5 || [];
+      html += '<strong>Top 5 configs (sweep):</strong><table style="margin-top:6px"><tr><th>delta</th><th>vol</th><th>trail</th><th>PF</th><th>WR%</th><th>trades</th><th>max_dd</th></tr>';
+      top5.forEach(c => {
+        html += `<tr><td>${c.delta_thr}</td><td>${c.vol_ratio_thr}</td><td>${c.trail_pct}</td>
+          <td style="color:#3fb950">${parseFloat(c.profit_factor||0).toFixed(2)}</td>
+          <td>${parseFloat(c.win_rate||0).toFixed(1)}%</td>
+          <td>${c.total_trades||0}</td>
+          <td style="color:#f85149">${fmtPct(c.max_dd_pct)}</td></tr>`;
+      });
+      html += '</table>';
+    } else {
+      const kpi = res.kpi || res;
+      html += `<div class="kv"><span class="k">Profit Factor</span><span class="v">${parseFloat(kpi.profit_factor||0).toFixed(2)}</span></div>`;
+      html += `<div class="kv"><span class="k">Win Rate</span><span class="v">${parseFloat(kpi.win_rate||0).toFixed(1)}%</span></div>`;
+      html += `<div class="kv"><span class="k">Trades</span><span class="v">${kpi.total_trades||0}</span></div>`;
+      html += `<div class="kv"><span class="k">Expectancy</span><span class="v">${parseFloat(kpi.expectancy||0).toFixed(3)}%</span></div>`;
+      html += `<div class="kv"><span class="k">Max DD</span><span class="v" style="color:#f85149">${fmtPct(kpi.max_dd_pct)}</span></div>`;
+    }
+    html += '</div>';
+    document.getElementById('replayResult').innerHTML = html;
+  } catch(e) { document.getElementById('replayResult').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+// ── Confirm helpers ──
+function showConfirm(name) {
+  document.querySelectorAll('.confirm-bar').forEach(el => el.style.display = 'none');
+  const el = document.getElementById('confirm' + name.charAt(0).toUpperCase() + name.slice(1));
+  if (el) el.style.display = 'flex';
+}
+function hideConfirm(name) {
+  const el = document.getElementById('confirm' + name.charAt(0).toUpperCase() + name.slice(1));
+  if (el) el.style.display = 'none';
+}
+
+async function doModeReset() {
+  const reason = document.getElementById('reasonModeReset').value || 'Dashboard reset';
+  const r = await api('POST', '/cc/mode/reset', {reason, confirm: 'CONFIRM'});
+  hideConfirm('modeReset');
+  const res = r ? await r.json() : {};
+  document.getElementById('modeActionResult').textContent = r && r.ok ? '✓ Mode gereset' : ('Fout: ' + (res.detail || '?'));
+  if (r && r.ok) setTimeout(loadModeStatus, 1000);
+}
+
+async function doShortEnable() {
+  const reason = document.getElementById('reasonShortEnable').value || 'Dashboard actie';
+  const r = await api('POST', '/cc/short/enable', {reason, confirm: 'CONFIRM'});
+  hideConfirm('shortEnable');
+  const res = r ? await r.json() : {};
+  document.getElementById('modeActionResult').textContent = r && r.ok ? '✓ Short engine geactiveerd' : ('Fout: ' + (res.detail || '?'));
+  if (r && r.ok) setTimeout(loadModeStatus, 1000);
+}
+
+async function doShortDisable() {
+  const reason = document.getElementById('reasonShortDisable').value || 'Dashboard actie';
+  const r = await api('POST', '/cc/short/disable', {reason, confirm: 'CONFIRM'});
+  hideConfirm('shortDisable');
+  const res = r ? await r.json() : {};
+  document.getElementById('modeActionResult').textContent = r && r.ok ? '✓ Short engine uitgeschakeld' : ('Fout: ' + (res.detail || '?'));
+  if (r && r.ok) setTimeout(loadModeStatus, 1000);
+}
+
+async function doReplayRun() {
+  hideConfirm('replayRun');
+  document.getElementById('replayStatus').textContent = 'Job gestart, wacht op resultaat...';
+  const body = {
+    symbol: document.getElementById('rpSymbol').value || 'BTCUSDT',
+    days: parseInt(document.getElementById('rpDays').value) || 90,
+    sweep: document.getElementById('rpSweep').checked,
+    delta_thr: parseFloat(document.getElementById('rpDelta').value) || -1.5,
+    vol_ratio_thr: parseFloat(document.getElementById('rpVol').value) || 1.8,
+    trail_pct: parseFloat(document.getElementById('rpTrail').value) || 1.0,
+    confirm: 'CONFIRM',
+  };
+  try {
+    const r = await api('POST', '/cc/short/replay/run', body);
+    if (!r || !r.ok) { const d = r ? await r.json() : {}; document.getElementById('replayStatus').textContent = 'Fout: ' + (d.detail || '?'); return; }
+    const d = await r.json();
+    document.getElementById('replayStatus').textContent = 'Job ' + (d.job_id || '?') + ' gestart. Refresh jobs om status te zien.';
+    setTimeout(loadReplayJobs, 2000);
+  } catch(e) { document.getElementById('replayStatus').textContent = 'Fout: ' + e.message; }
+}
 
 // ── Init ──
 document.getElementById('userInfo').textContent = localStorage.getItem('cc_email') || '';
@@ -352,12 +717,24 @@ loadStatus();
 loadBalance();
 loadProposals();
 loadLogs();
+loadModeStatus();
+loadWsHealth();
+loadAlerts();
+loadShortMonitor();
+loadShortLog();
+loadReplayJobs();
 
 // Auto-refresh
 setInterval(loadStatus, 15000);
 setInterval(loadProposals, 15000);
 setInterval(loadLogs, 30000);
 setInterval(loadBalance, 60000);
+setInterval(loadModeStatus, 10000);
+setInterval(loadWsHealth, 15000);
+setInterval(loadAlerts, 10000);
+setInterval(loadShortMonitor, 10000);
+setInterval(loadShortLog, 15000);
+setInterval(loadReplayJobs, 30000);
 </script>
 </body>
 </html>
