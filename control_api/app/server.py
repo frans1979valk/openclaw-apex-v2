@@ -204,14 +204,14 @@ def signal_performance(limit: int = 50, x_api_key: str | None = Header(default=N
 
 def ensure_tables(conn):
     cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS proposals(
+    cur.execute(adapt_query("""CREATE TABLE IF NOT EXISTS proposals(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         agent TEXT NOT NULL,
         params_json TEXT NOT NULL,
         reason TEXT,
         status TEXT NOT NULL DEFAULT 'pending'
-    )""")
+    )"""))
     conn.commit()
 
 @app.get("/proposals")
@@ -2691,3 +2691,264 @@ def testbot_markers(
             })
 
     return {"entries": entries, "exits": exits, "symbol": sym}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /signal/explain — Waarom werd dit signaal WEL of NIET uitgevoerd?
+# ══════════════════════════════════════════════════════════════════════════════
+
+INDICATOR_ENGINE_URL = os.getenv("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
+HALT_FILE    = "/var/apex/trading_halt.json"
+STATE_PATH_E = "/var/apex/bot_state.json"
+BTC_FILTER_EXEMPT = {"BTCUSDT", "ETHUSDT", "DOGEUSDT", "LTCUSDT"}
+
+def _explain_get_state() -> dict:
+    try:
+        with open(STATE_PATH_E, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _explain_is_halted() -> tuple[bool, str]:
+    """Geeft (halted, reden)."""
+    try:
+        with open(HALT_FILE, "r") as f:
+            d = json.load(f)
+        if d.get("halted"):
+            return True, d.get("reason", "handmatig gestopt")
+        paused_until = d.get("paused_until")
+        if paused_until:
+            until = datetime.fromisoformat(paused_until)
+            if datetime.now(timezone.utc) < until:
+                mins_left = int((until - datetime.now(timezone.utc)).total_seconds() / 60)
+                return True, f"gepauzeerd nog {mins_left} min"
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return False, ""
+
+def _explain_get_indicators(symbol: str) -> dict:
+    try:
+        r = requests.get(f"{INDICATOR_ENGINE_URL}/indicators/{symbol}?interval=4h", timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+def _explain_get_pattern(symbol: str, interval: str) -> dict:
+    try:
+        r = requests.get(f"{INDICATOR_ENGINE_URL}/signal/{symbol}?interval={interval}", timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+def _explain_count_open_positions() -> int:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(adapt_query(
+            "SELECT COUNT(*) FROM demo_account WHERE action='BUY' AND symbol IN "
+            "(SELECT DISTINCT symbol FROM demo_account WHERE action='BUY') "
+            "AND symbol NOT IN (SELECT DISTINCT symbol FROM demo_account WHERE action='SELL')"
+        ))
+        row = cur.fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+@app.get("/signal/explain")
+def signal_explain(
+    symbol: str = Query(..., description="Coin symbol, bijv. BTCUSDT"),
+    signal: str = Query(default="BUY", description="Signaaltype: BUY, MOMENTUM, BREAKOUT_BULL, PERFECT_DAY"),
+    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
+):
+    """
+    Legt uit waarom een signaal WEL of NIET wordt uitgevoerd voor dit coin.
+    Doorloopt de volledige filter-stack van apex_engine in volgorde.
+
+    Filters (in volgorde):
+      1. trading_halt      — is trading gepauzeerd/gestopt?
+      2. skip_coins        — staat dit coin in de skip lijst?
+      3. btc_ema200        — is BTC boven 4h EMA200?
+      4. btc_ema_rsi       — is BTC EMA21>55 en RSI OK? (1h filter)
+      5. pre_crash         — is de crash score lager dan drempel?
+      6. rsi_threshold     — is RSI laag genoeg voor entry?
+      7. rsi_chop_zone     — zit RSI NIET in de neutrale chop zone?
+      8. signal_blacklist  — is dit (coin, signaal) niet geblokkeerd?
+      9. pattern_engine    — geeft 1h+4h patroonanalyse groen licht?
+     10. max_positions     — zijn er nog open positie-slots?
+    """
+    auth(x_api_key)
+
+    sym    = "".join(c for c in symbol if c.isalnum()).upper()
+    sig    = signal.upper()
+    result = {"symbol": sym, "signal": sig, "filters": [], "verdict": None, "generated_at": datetime.now(timezone.utc).isoformat()}
+    filters = result["filters"]
+    first_block = None
+
+    def _filter(name: str, passed: bool, detail: str, value=None):
+        nonlocal first_block
+        status = "PASS" if passed else "BLOCK"
+        if not passed and first_block is None:
+            first_block = name
+        filters.append({"filter": name, "status": status, "detail": detail, "value": value})
+
+    # Laad huidige state
+    state = _explain_get_state()
+    overrides = state.get("config_overrides") or {}
+    coin_data = next((c for c in state.get("coins", []) if c.get("symbol") == sym), {})
+
+    # ── Filter 1: trading halt ────────────────────────────────────────────────
+    halted, halt_reason = _explain_is_halted()
+    _filter("trading_halt", not halted, halt_reason or "trading actief")
+
+    # ── Filter 2: skip_coins ─────────────────────────────────────────────────
+    skip_set = set(overrides.get("skip_coins", []))
+    in_skip = sym in skip_set or sym.replace("USDT", "") + "USDT" in skip_set
+    _filter("skip_coins", not in_skip,
+            f"{sym} staat in skip_coins" if in_skip else "niet in skip lijst",
+            list(skip_set) if skip_set else None)
+
+    # ── Filter 3: BTC EMA200 (4h) ────────────────────────────────────────────
+    btc_4h = _explain_get_indicators("BTCUSDT")
+    btc_ema200  = btc_4h.get("ema200")
+    btc_close   = btc_4h.get("close")
+    btc_above_ema200 = True
+    if btc_ema200 and btc_close:
+        btc_above_ema200 = float(btc_close) > float(btc_ema200)
+    exempt = sym in BTC_FILTER_EXEMPT or sig not in ("BUY", "BREAKOUT_BULL", "MOMENTUM", "PERFECT_DAY")
+    ema200_blocked = not btc_above_ema200 and not exempt
+    _filter("btc_ema200",
+            not ema200_blocked,
+            f"BTC {btc_close:.0f} {'>' if btc_above_ema200 else '<'} EMA200 {btc_ema200:.0f}"
+            if btc_ema200 and btc_close else "BTC EMA200 onbekend (API fout)",
+            {"btc_close": btc_close, "btc_ema200": btc_ema200, "above": btc_above_ema200})
+
+    # ── Filter 4: BTC EMA21/55 + RSI 1h ─────────────────────────────────────
+    btc_1h_state = next((c for c in state.get("coins", []) if c.get("symbol") == "BTCUSDT"), {})
+    btc_ema_bull = btc_1h_state.get("ema21") and btc_1h_state.get("ema55") and \
+                   btc_1h_state.get("price", 0) > (btc_1h_state.get("ema21") or 0) > (btc_1h_state.get("ema55") or 0)
+    btc_rsi = btc_1h_state.get("rsi")
+    BTC_RSI_THRESHOLD = 45.0
+    btc_1h_bearish = (btc_ema_bull is False) and (btc_rsi or 50) < BTC_RSI_THRESHOLD
+    ema_rsi_blocked = btc_1h_bearish and sym not in BTC_FILTER_EXEMPT and sig in ("BUY", "BREAKOUT_BULL", "MOMENTUM")
+    _filter("btc_ema_rsi",
+            not ema_rsi_blocked,
+            f"BTC 1h bearish: ema_bull={btc_ema_bull}, RSI={btc_rsi:.1f}" if ema_rsi_blocked
+            else f"BTC 1h OK (ema_bull={btc_ema_bull}, RSI={round(btc_rsi, 1) if btc_rsi else '?'})",
+            {"btc_ema_bull": btc_ema_bull, "btc_rsi": btc_rsi})
+
+    # ── Filter 5: Pre-crash score ─────────────────────────────────────────────
+    crash_score = coin_data.get("pre_crash_score", 0)
+    PRE_CRASH_BUY_BLOCK = int(overrides.get("pre_crash_buy_block", 60))
+    safe_to_buy = crash_score < PRE_CRASH_BUY_BLOCK
+    _filter("pre_crash",
+            safe_to_buy,
+            f"crash score {crash_score:.0f} {'< ' if safe_to_buy else '>= '}{PRE_CRASH_BUY_BLOCK} (drempel)",
+            {"score": crash_score, "threshold": PRE_CRASH_BUY_BLOCK})
+
+    # ── Filter 6: RSI threshold ───────────────────────────────────────────────
+    RSI_BUY_THRESHOLD = float(overrides.get("rsi_buy_threshold", 35.0))
+    current_rsi = coin_data.get("rsi")
+    rsi_ok = current_rsi is not None and current_rsi < RSI_BUY_THRESHOLD
+    _filter("rsi_threshold",
+            rsi_ok,
+            f"RSI {current_rsi:.1f} {'< ' if rsi_ok else '>= '}{RSI_BUY_THRESHOLD} (drempel)"
+            if current_rsi is not None else "RSI onbekend (coin niet in tracking)",
+            {"rsi": current_rsi, "threshold": RSI_BUY_THRESHOLD})
+
+    # ── Filter 7: RSI chop zone ───────────────────────────────────────────────
+    rsi_chop_max = float(overrides.get("rsi_chop_max", 55.0))
+    chop_blocked = False
+    if sig == "BUY" and current_rsi is not None:
+        chop_blocked = RSI_BUY_THRESHOLD < current_rsi < rsi_chop_max
+    _filter("rsi_chop_zone",
+            not chop_blocked,
+            f"RSI {current_rsi:.1f} in chop zone ({RSI_BUY_THRESHOLD:.0f}–{rsi_chop_max:.0f})"
+            if chop_blocked else f"RSI buiten chop zone ({RSI_BUY_THRESHOLD:.0f}–{rsi_chop_max:.0f})",
+            {"rsi": current_rsi, "chop_min": RSI_BUY_THRESHOLD, "chop_max": rsi_chop_max})
+
+    # ── Filter 8: Signal blacklist ────────────────────────────────────────────
+    try:
+        conn = get_conn()
+        cur  = dict_cursor(conn)
+        cur.execute(adapt_query("""
+            SELECT symbol, signal, COUNT(*) as n, AVG(pnl_1h_pct) as avg_pnl
+            FROM signal_performance
+            WHERE pnl_1h_pct IS NOT NULL AND symbol = ? AND signal = ?
+            GROUP BY symbol, signal
+            HAVING COUNT(*) >= 10 AND AVG(pnl_1h_pct) < -0.40
+        """), (sym, sig))
+        bl_row = cur.fetchone()
+        conn.close()
+        blacklisted = bl_row is not None
+        if bl_row:
+            bl_detail = dict(bl_row)
+            _filter("signal_blacklist", False,
+                    f"{sym}/{sig} geblokkeerd: avg_pnl_1h={float(bl_detail.get('avg_pnl',0)):.3f}% over {bl_detail.get('n')} trades",
+                    bl_detail)
+        else:
+            _filter("signal_blacklist", True, f"{sym}/{sig} niet op blacklist")
+    except Exception as e:
+        _filter("signal_blacklist", True, f"blacklist check mislukt: {e}")
+        blacklisted = False
+
+    # ── Filter 9: Pattern engine ──────────────────────────────────────────────
+    pattern_blocked = False
+    pat_detail = {}
+    if sig in ("BUY", "BREAKOUT_BULL", "MOMENTUM", "PERFECT_DAY"):
+        pat1h = _explain_get_pattern(sym, "1h")
+        pat4h = _explain_get_pattern(sym, "4h")
+        sig1h = pat1h.get("signaal", "HOLD")
+        sig4h = pat4h.get("signaal", "HOLD")
+        conf1h = float(pat1h.get("confidence") or 0)
+        conf4h = float(pat4h.get("confidence") or 0)
+        min_conf = float(overrides.get("pattern_min_confidence", 0.0))
+        pat_detail = {"1h": sig1h, "4h": sig4h, "conf_1h": conf1h, "conf_4h": conf4h,
+                      "win_rate_1h": pat1h.get("win_rate"), "avg_pnl_1h": pat1h.get("avg_pnl_1h")}
+        if sig1h == "AVOID":
+            pattern_blocked = True
+            _filter("pattern_engine", False,
+                    f"1h AVOID (win_rate={pat1h.get('win_rate')}%, avg_pnl={pat1h.get('avg_pnl_1h')}%)", pat_detail)
+        elif sig4h == "AVOID":
+            pattern_blocked = True
+            _filter("pattern_engine", False,
+                    f"4h AVOID (win_rate={pat4h.get('win_rate')}%, avg_pnl={pat4h.get('avg_pnl_1h')}%)", pat_detail)
+        elif min_conf > 0 and conf1h < min_conf:
+            pattern_blocked = True
+            _filter("pattern_engine", False,
+                    f"1h confidence {conf1h:.2f} < minimum {min_conf:.2f}", pat_detail)
+        else:
+            both = sig1h == "BUY" and sig4h == "BUY"
+            _filter("pattern_engine", True,
+                    f"1h={sig1h}(c={conf1h:.2f}) 4h={sig4h}(c={conf4h:.2f})"
+                    + (" — DUBBELE BEVESTIGING" if both else ""), pat_detail)
+    else:
+        _filter("pattern_engine", True, "pattern check niet van toepassing voor dit signaal")
+
+    # ── Filter 10: Max posities ───────────────────────────────────────────────
+    max_pos   = int(overrides.get("max_positions", 4))
+    open_pos  = _explain_count_open_positions()
+    max_blocked = open_pos >= max_pos
+    _filter("max_positions",
+            not max_blocked,
+            f"{open_pos}/{max_pos} open posities {'— vol' if max_blocked else '— ruimte beschikbaar'}",
+            {"open": open_pos, "max": max_pos})
+
+    # ── Eindoordeel ───────────────────────────────────────────────────────────
+    all_pass = all(f["status"] == "PASS" for f in filters)
+    blocks   = [f["filter"] for f in filters if f["status"] == "BLOCK"]
+
+    result["verdict"] = "UITGEVOERD" if all_pass else "GEBLOKKEERD"
+    result["blocked_by"] = blocks
+    result["first_blocker"] = first_block
+    result["summary"] = (
+        f"{sym} {sig} zou worden uitgevoerd — alle {len(filters)} filters groen"
+        if all_pass else
+        f"{sym} {sig} geblokkeerd door: {', '.join(blocks)}"
+    )
+
+    return result

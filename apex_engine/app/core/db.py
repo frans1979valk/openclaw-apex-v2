@@ -251,33 +251,46 @@ def log_market_context(db_path: str, symbol: str, signal: str, entry_price: floa
 DEMO_TRADE_SIZE_PCT = 0.05   # 5% van balans per trade (max $50)
 DEMO_MAX_TRADE_USDT = 50.0
 
-def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> None:
-    """Registreer een virtuele koop in de demo rekening."""
+def demo_virtual_buy(db_path: str, symbol: str, price: float, signal: str) -> int | None:
+    """Registreer een virtuele koop in de demo rekening. Geeft het nieuwe demo_account.id terug."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT balance FROM demo_balance WHERE id=1")
     row = cur.fetchone()
     if not row:
         conn.close()
-        return
+        return None
     balance = row[0]
     size_usdt = min(DEMO_MAX_TRADE_USDT, balance * DEMO_TRADE_SIZE_PCT)
     if size_usdt < 1.0:
         conn.close()
-        return
+        return None
     ts = datetime.now(timezone.utc).isoformat()
-    cur.execute(
-        adapt_query("""INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
-           virtual_pnl_usdt, balance_after, signal, note)
-           VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?)"""),
-        (ts, symbol, price, size_usdt, balance, signal, f"Auto-buy op {signal}")
-    )
+    from db_compat import is_pg
+    if is_pg():
+        cur.execute(
+            adapt_query("""INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
+               virtual_pnl_usdt, balance_after, signal, note)
+               VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?) RETURNING id"""),
+            (ts, symbol, price, size_usdt, balance, signal, f"Auto-buy op {signal}")
+        )
+        row2 = cur.fetchone()
+        new_id = row2[0] if row2 else None
+    else:
+        cur.execute(
+            adapt_query("""INSERT INTO demo_account(ts, symbol, action, price, virtual_size_usdt,
+               virtual_pnl_usdt, balance_after, signal, note)
+               VALUES (?, ?, 'buy', ?, ?, 0, ?, ?, ?)"""),
+            (ts, symbol, price, size_usdt, balance, signal, f"Auto-buy op {signal}")
+        )
+        new_id = cur.lastrowid
     cur.execute(
         adapt_query("UPDATE demo_balance SET total_trades=total_trades+1, total_volume_usdt=total_volume_usdt+? WHERE id=1"),
         (size_usdt,)
     )
     conn.commit()
     conn.close()
+    return new_id
 
 
 def demo_evaluate_trades(db_path: str, symbol: str, current_price: float) -> None:
@@ -317,6 +330,13 @@ def demo_evaluate_trades(db_path: str, symbol: str, current_price: float) -> Non
                     adapt_query("UPDATE demo_balance SET balance=balance+? WHERE id=1"),
                     (pnl_usdt,)
                 )
+            # Schrijf 1h outcome naar trade_features (match via demo_trade_id = tid)
+            pnl_1h_pct = round((current_price / buy_price - 1) * 100, 3) if buy_price else None
+            cur.execute(adapt_query("""
+                UPDATE trade_features
+                SET pnl_1h_pct = ?, outcome_status = 'closed_1h'
+                WHERE demo_trade_id = ? AND outcome_status = 'open'
+            """), (pnl_1h_pct, tid))
     conn.commit()
     conn.close()
 
@@ -335,6 +355,77 @@ def count_open_demo_positions() -> int:
     except Exception as e:
         print(f"[db] count_open_demo_positions fout: {e}")
         return 0
+
+
+def log_trade_features(
+    demo_trade_id: int | None,
+    symbol: str,
+    signal: str,
+    entry_price: float,
+    ind: dict,
+    crash_score: float = 0.0,
+    volume_usdt: float = 0.0,
+    mtf: dict = None,
+    btc_state: dict = None,
+    blocker_context: dict = None,
+) -> None:
+    """
+    Sla een indicator-snapshot op bij trade-entry in de feature store.
+    Koppelt via demo_trade_id aan demo_account.id.
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        ts = datetime.now(timezone.utc).isoformat()
+
+        # EMA afstanden in %
+        ema21  = ind.get("ema21")
+        ema55  = ind.get("ema55")
+        ema200 = ind.get("ema200")
+        dist21  = round((entry_price - ema21)  / ema21  * 100, 3) if ema21  and ema21  > 0 else None
+        dist55  = round((entry_price - ema55)  / ema55  * 100, 3) if ema55  and ema55  > 0 else None
+        dist200 = round((entry_price - ema200) / ema200 * 100, 3) if ema200 and ema200 > 0 else None
+
+        # BTC regime info
+        bs = btc_state or {}
+        btc_above = bs.get("above_ema200", True)
+        btc_ema200_val = None
+        btc_close_val  = None
+
+        # Regime bepalen
+        if dist200 is not None:
+            if dist200 > 3:    regime = "bull"
+            elif dist200 < -3: regime = "bear"
+            else:              regime = "chop"
+        else:
+            regime = "unknown"
+
+        # Multi-TF context
+        tf = mtf or {}
+        tf_bias  = tf.get("tf_bias")
+        tf_score = tf.get("confirm_score")
+
+        cur.execute(adapt_query("""
+            INSERT INTO trade_features
+            (ts, demo_trade_id, symbol, signal, entry_price,
+             rsi, macd_hist, adx, bb_width,
+             ema21, ema55, ema200, ema21_dist_pct, ema55_dist_pct, ema200_dist_pct,
+             crash_score, volume_usdt, atr,
+             tf_bias, tf_confirm_score, btc_regime, btc_ema200, btc_close,
+             blocker_context, outcome_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+        """), (
+            ts, demo_trade_id, symbol, signal, entry_price,
+            ind.get("rsi"), ind.get("macd_hist"), ind.get("adx"), ind.get("bb_width"),
+            ema21, ema55, ema200, dist21, dist55, dist200,
+            crash_score, volume_usdt, ind.get("atr"),
+            tf_bias, tf_score, regime, btc_ema200_val, btc_close_val,
+            json.dumps(blocker_context or {}),
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[feature_store] log_trade_features fout voor {symbol}: {e}")
 
 
 def get_demo_stats(db_path: str) -> dict:

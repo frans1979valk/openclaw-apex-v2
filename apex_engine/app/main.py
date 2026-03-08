@@ -5,7 +5,7 @@ from .core.state import write_state
 from .core.db import (init_db, log_event, log_order, log_signal_entry,
                       evaluate_open_signals, get_backtest_summaries,
                       log_market_context, demo_virtual_buy, demo_evaluate_trades,
-                      count_open_demo_positions)
+                      count_open_demo_positions, log_trade_features)
 from .exchanges.blofin_demo import create_executor
 from .exchanges.binance_feed import BinanceFeed
 from .exchanges.bybit_feed import BybitFeed
@@ -498,7 +498,28 @@ def main():
                                    rsi_5m=ind.get("rsi"), tf_confirm_score=mtf.get("confirm_score"),
                                    tf_bias=mtf.get("tf_bias"), tf_detail=mtf.get("tf_detail", {}))
                 if _rsi_ok and not _buy_blocked:
-                    demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
+                    _demo_id = demo_virtual_buy(db_path, symbol=sym, price=price, signal=signal)
+                    # Feature store — snapshot van alle indicators op entry
+                    _blocker_ctx = {
+                        "btc_ema200_blocked": _btc_ema200_blocked,
+                        "btc_blocked": _btc_blocked,
+                        "blacklisted": _blacklisted,
+                        "pattern_blocked": _pattern_blocked,
+                        "chop_blocked": _chop_blocked,
+                        "max_blocked": _max_blocked,
+                    }
+                    log_trade_features(
+                        demo_trade_id=_demo_id,
+                        symbol=sym,
+                        signal=signal,
+                        entry_price=price,
+                        ind=ind,
+                        crash_score=crash_score,
+                        volume_usdt=vol,
+                        mtf=mtf,
+                        btc_state=btc_state,
+                        blocker_context=_blocker_ctx,
+                    )
                     # Sla fingerprint op voor live feedback na 1h
                     _fp = _pat1h.get("fingerprint") if "_pat1h" in dir() else {}
                     if _fp:

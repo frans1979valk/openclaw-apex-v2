@@ -263,6 +263,53 @@ CREATE TABLE IF NOT EXISTS testbot_trades (
     status      TEXT NOT NULL DEFAULT 'open'
 );
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Feature store — indicator snapshot op entry per demo trade
+-- ══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS trade_features (
+    id              SERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    demo_trade_id   INTEGER,                -- FK naar demo_account.id
+    symbol          TEXT NOT NULL,
+    signal          TEXT NOT NULL,
+    entry_price     REAL NOT NULL,
+    -- Technische indicators op entry
+    rsi             REAL,
+    macd_hist       REAL,
+    adx             REAL,
+    bb_width        REAL,
+    -- EMA niveaus en afstand tot prijs
+    ema21           REAL,
+    ema55           REAL,
+    ema200          REAL,
+    ema21_dist_pct  REAL,                   -- (price - ema21) / ema21 * 100
+    ema55_dist_pct  REAL,
+    ema200_dist_pct REAL,
+    -- Marktcondities
+    crash_score     REAL,
+    volume_usdt     REAL,
+    atr             REAL,
+    -- Multi-timeframe context
+    tf_bias         TEXT,
+    tf_confirm_score INTEGER,
+    -- Regime (bull/bear/chop) op basis van BTC EMA200 4h
+    btc_regime      TEXT,
+    btc_ema200      REAL,
+    btc_close       REAL,
+    -- Blocker context — welke filters gingen over? (JSON)
+    blocker_context TEXT,
+    -- Uitkomsten — gevuld nadat trade sluit
+    pnl_1h_pct      REAL,
+    pnl_4h_pct      REAL,
+    outcome_status  TEXT NOT NULL DEFAULT 'open'
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_features_symbol ON trade_features(symbol);
+CREATE INDEX IF NOT EXISTS idx_trade_features_ts ON trade_features(ts);
+CREATE INDEX IF NOT EXISTS idx_trade_features_signal ON trade_features(signal);
+CREATE INDEX IF NOT EXISTS idx_trade_features_demo_id ON trade_features(demo_trade_id);
+
 CREATE INDEX IF NOT EXISTS idx_testbot_status ON testbot_trades(status);
 CREATE INDEX IF NOT EXISTS idx_testbot_symbol ON testbot_trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_testbot_ts     ON testbot_trades(entry_ts);

@@ -17,17 +17,18 @@ log = logging.getLogger("kimi_pattern_agent")
 app = FastAPI(title="Kimi Pattern Agent")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-KIMI_API_KEY  = os.getenv("KIMI_API_KEY", "")
-KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
-KIMI_MODEL    = os.getenv("KIMI_MODEL", "moonshot-v1-32k")
-BINANCE_BASE  = os.getenv("BINANCE_BASE", "https://api.binance.com")
-DB_PATH       = "/var/apex/apex.db"
-REPORT_DIR    = "/var/apex"
-TG_BOT_TOKEN  = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID    = os.getenv("TG_CHAT_ID", "")
-TRACKED_COINS = os.getenv("TRACKED_COINS", "BTCUSDT,ETHUSDT,SOLUSDT,AVAXUSDT,AAVEUSDT").split(",")
+KIMI_API_KEY    = os.getenv("KIMI_API_KEY", "")
+KIMI_BASE_URL   = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
+KIMI_MODEL      = os.getenv("KIMI_MODEL", "moonshot-v1-32k")
+BINANCE_BASE    = os.getenv("BINANCE_BASE", "https://api.binance.com")
+ORACLE_URL      = os.getenv("ORACLE_URL", "http://market_oracle_sandbox:8095")
+DB_PATH         = "/var/apex/apex.db"
+REPORT_DIR      = "/var/apex"
+TG_BOT_TOKEN    = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID      = os.getenv("TG_CHAT_ID", "")
+TRACKED_COINS   = os.getenv("TRACKED_COINS", "BTCUSDT,ETHUSDT,SOLUSDT,AVAXUSDT,AAVEUSDT").split(",")
 # Nachtelijke analyse uur (UTC)
-ANALYSIS_HOUR = int(os.getenv("ANALYSIS_HOUR", "3"))
+ANALYSIS_HOUR   = int(os.getenv("ANALYSIS_HOUR", "3"))
 
 
 # ── Binance OHLCV ────────────────────────────────────────────────────────────
@@ -200,12 +201,26 @@ def get_ohlcv_summary() -> dict:
 
 # ── Kimi patroonanalyse ──────────────────────────────────────────────────────
 
+def get_macro_context() -> dict:
+    """Haal macro-economische context op via market_oracle_sandbox."""
+    try:
+        r = req.get(f"{ORACLE_URL}/scan", timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        log.info(f"Market oracle scan: {data.get('analysis', {}).get('short_term', {}).get('outlook', '?')}")
+        return data
+    except Exception as e:
+        log.error(f"Market oracle fout: {e}")
+        return {"error": str(e)}
+
+
 def run_kimi_analysis() -> dict:
-    """Nachtelijke Kimi analyse: patronen in signalen en prijsdata."""
+    """Nachtelijke Kimi analyse: patronen in signalen, prijsdata en macro context."""
     log.info("Start nachtelijke Kimi patroonanalyse...")
 
     stats = get_signal_stats()
     ohlcv_summary = get_ohlcv_summary()
+    macro = get_macro_context()
 
     # Bereken huidige RSI en trend per coin
     coin_indicators = []
@@ -231,7 +246,11 @@ def run_kimi_analysis() -> dict:
         except Exception as e:
             log.error(f"Indicator fout {symbol}: {e}")
 
-    prompt = f"""Je bent een crypto trading pattern analyst. Analyseer de volgende data van de afgelopen 7 dagen en identificeer patronen.
+    prompt = f"""Je bent een crypto trading research analyst. Je werkt voor Jojo1, een AI trading operator.
+Jouw taak: analyseer alle beschikbare data en schrijf een volledig rapport dat Jojo1 direct kan gebruiken.
+
+## Macro Context (market_oracle — nieuws + Yahoo Finance)
+{json.dumps(macro, indent=2, default=str)}
 
 ## Signaal Performance (afgelopen 7 dagen)
 {json.dumps(stats['signal_performance'], indent=2, default=str)}
@@ -242,35 +261,42 @@ def run_kimi_analysis() -> dict:
 ## Recente Events (24u)
 {json.dumps(stats['recent_events'], indent=2, default=str)}
 
-## Huidige Indicatoren (4h)
+## Huidige Indicatoren per Coin (4h)
 {json.dumps(coin_indicators, indent=2)}
-
-## OHLCV Data Beschikbaarheid
-{json.dumps(ohlcv_summary.get('ohlcv_coverage', []), indent=2, default=str)}
 
 Geef je analyse in het volgende JSON formaat:
 {{
+  "macro_summary": "1-2 zinnen: wat zegt het nieuws over de markt?",
+  "macro_impact": "bullish|bearish|neutraal",
   "patterns": [
     {{
-      "type": "trend|reversal|correlation|anomaly|performance",
+      "type": "trend|reversal|correlation|anomaly|performance|macro",
       "symbol": "COIN of ALL",
       "description": "Korte beschrijving",
       "confidence": 0.0-1.0,
       "impact": "low|medium|high",
-      "recommendation": "Concrete aanbeveling"
+      "recommendation": "Concrete aanbeveling voor Jojo1"
     }}
   ],
-  "overall_assessment": "Korte samenvatting van de marktsituatie",
+  "overall_assessment": "Samenvatting voor Jojo1: wat is de situatie en wat moet hij weten?",
   "risk_level": "low|medium|high",
-  "suggested_actions": ["actie1", "actie2"]
+  "suggested_actions": [
+    {{
+      "action": "PAUSE|RESUME|PARAM_CHANGE|WATCH|NO_ACTION",
+      "reason": "Waarom?",
+      "priority": "urgent|normal|low"
+    }}
+  ],
+  "coins_to_watch": ["SYMBOL1", "SYMBOL2"],
+  "coins_to_avoid": ["SYMBOL3"]
 }}
 
 Focus op:
-1. Welke signalen (BUY/SELL) het best presteren per coin
-2. Onverwachte correlaties of divergenties
-3. RSI patronen die kansen of risico's signaleren
-4. Performance trends (verbetering of verslechtering)
-5. Concrete aanbevelingen voor parameter aanpassingen
+1. Macro nieuws — beïnvloedt dit BTC/crypto positief of negatief?
+2. Welke coins hebben de beste setup op basis van RSI + trend?
+3. Welke coins presteren slecht en moeten vermeden worden?
+4. Zijn er anomalieën of risico's die Jojo1 moet kennen?
+5. Concrete, prioritaire acties voor Jojo1
 
 Antwoord ALLEEN met valid JSON, geen andere tekst."""
 
@@ -305,6 +331,7 @@ Antwoord ALLEEN met valid JSON, geen andere tekst."""
     report = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "analysis": analysis,
+        "macro_context": macro,
         "input_stats": stats,
         "indicators": coin_indicators,
     }
@@ -338,6 +365,44 @@ Antwoord ALLEEN met valid JSON, geen andere tekst."""
     return report
 
 
+# ── Snelle nieuws scan (geen AI) ─────────────────────────────────────────────
+
+def quick_news_scan():
+    """Elk uur: snelle marktscan via market_oracle. Stuurt alert als risico hoog is. Geen Kimi API call."""
+    try:
+        macro = get_macro_context()
+        if "error" in macro:
+            return
+        analysis = macro.get("analysis", {})
+        short = analysis.get("short_term", {}).get("outlook", "")
+        suggested = macro.get("suggested_actions", [])
+        contrarian = macro.get("contrarian_risk", 0)
+
+        # Alert alleen bij urgent signaal
+        urgent = "PAUSE" in suggested or contrarian > 0.7
+        if urgent and TG_BOT_TOKEN and TG_CHAT_ID:
+            factors = macro.get("key_factors", [])[:3]
+            lines = [
+                "⚡ <b>Kimi Nieuws Alert</b>",
+                f"Markt: <b>{short}</b> | Contrarian risico: {round(contrarian * 100)}%",
+                "",
+            ]
+            for f in factors:
+                lines.append(f"• {f}")
+            if suggested:
+                lines.append(f"\n→ Aanbevolen: {', '.join(suggested)}")
+            req.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": "\n".join(lines), "parse_mode": "HTML"},
+                timeout=10,
+            )
+            log.info(f"Nieuws alert verstuurd: {short}, suggested={suggested}")
+        else:
+            log.info(f"Nieuws scan: {short} (geen alert nodig)")
+    except Exception as e:
+        log.error(f"Quick news scan fout: {e}")
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler()
@@ -349,10 +414,14 @@ def startup():
     # OHLCV ophalen elke 4 uur
     scheduler.add_job(collect_all_ohlcv, "interval", hours=4, id="ohlcv_collect",
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30))
-    # Kimi analyse om ANALYSIS_HOUR UTC
-    scheduler.add_job(run_kimi_analysis, "cron", hour=ANALYSIS_HOUR, minute=0, id="nightly_analysis")
+    # Snelle nieuws scan elk uur (geen AI, gratis)
+    scheduler.add_job(quick_news_scan, "interval", hours=1, id="news_scan",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60))
+    # Volledige Kimi analyse elke 4 uur (met AI)
+    scheduler.add_job(run_kimi_analysis, "interval", hours=4, id="kimi_analysis",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3))
     scheduler.start()
-    log.info(f"Scheduler gestart: OHLCV elke 4u, Kimi analyse om {ANALYSIS_HOUR}:00 UTC")
+    log.info("Scheduler gestart: OHLCV elke 4u | Nieuws scan elk uur | Kimi analyse elke 4u")
 
 
 @app.on_event("shutdown")

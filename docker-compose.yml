@@ -215,7 +215,6 @@ services:
     volumes:
       - apex_data:/var/apex
     environment:
-      - KIMI_API_KEY=${KIMI_API_KEY:-}
       - KIMI_BASE_URL=https://api.moonshot.ai/v1
       - KIMI_MODEL=moonshot-v1-32k
       - BINANCE_BASE=https://api.binance.com

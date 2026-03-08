@@ -1,5 +1,7 @@
 """Jojo Analytics — lichte Python analytics service voor Jojo1."""
 import os, json
+from datetime import datetime, timezone
+from collections import defaultdict
 import numpy as np
 import requests as req
 from fastapi import FastAPI, HTTPException
@@ -318,3 +320,399 @@ def oracle(body: OracleRequest):
             raise HTTPException(status_code=400, detail=f"Onbekende action: {body.action}. Gebruik 'scan' of 'event'.")
     except req.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Oracle niet bereikbaar: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /performance/unified — Uitgebreide performance analyse voor Jojo
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_regime(ts, btc_regime_data: list) -> str:
+    """Bepaal marktregime (bull/bear/chop) voor een gegeven timestamp op basis van BTC EMA200 (4h)."""
+    for candle_ts, btc_price, ema200 in reversed(btc_regime_data):
+        if candle_ts <= ts:
+            diff_pct = (btc_price - ema200) / ema200 * 100
+            if diff_pct > 3:
+                return "bull"
+            elif diff_pct < -3:
+                return "bear"
+            else:
+                return "chop"
+    return "unknown"
+
+
+def _fmt_group(d: dict) -> dict:
+    t = d["trades"]
+    gross_profit = d["gross_profit"]
+    gross_loss = d["gross_loss"]
+    return {
+        "trades": t,
+        "wins": d["wins"],
+        "losses": t - d["wins"],
+        "winrate_pct": round(d["wins"] / t * 100, 1) if t > 0 else 0,
+        "total_pnl_usdt": round(d["pnl"], 2),
+        "avg_pnl_usdt": round(d["pnl"] / t, 2) if t > 0 else 0,
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
+    }
+
+
+def _group_default():
+    return {"trades": 0, "wins": 0, "pnl": 0.0, "gross_profit": 0.0, "gross_loss": 0.0}
+
+
+def _update_group(g: dict, pnl: float):
+    g["trades"] += 1
+    g["wins"] += int(pnl > 0)
+    g["pnl"] += pnl
+    if pnl > 0:
+        g["gross_profit"] += pnl
+    else:
+        g["gross_loss"] += abs(pnl)
+
+
+@app.get("/performance/unified")
+def unified_performance(days: int = 30, symbol: Optional[str] = None):
+    """
+    Unified performance breakdown per coin, per signaal, per marktregime.
+    Query params:
+      - days (int, default 30): hoeveel dagen terug
+      - symbol (str, optioneel): filter op één coin (bijv. BTCUSDT)
+    """
+    try:
+        conn = get_conn()
+        cur = dict_cursor(conn)
+
+        # 1. Demo balance samenvatting
+        cur.execute("SELECT balance, peak_balance, total_trades, winning_trades FROM demo_balance WHERE id = 1")
+        bal_row = cur.fetchone()
+        bal = dict(bal_row) if bal_row else {}
+
+        # 2. Gesloten trades uit demo_account (SELL/CLOSE acties met PnL)
+        sym_clause = "AND symbol = %s" if is_pg() else "AND symbol = ?"
+        time_clause = f"AND ts > NOW() - INTERVAL '{days} days'" if is_pg() else f"AND ts > datetime('now', '-{days} days')"
+        params = [symbol.upper()] if symbol else []
+
+        q = f"""
+            SELECT ts, symbol, action, price, virtual_pnl_usdt, balance_after, signal
+            FROM demo_account
+            WHERE virtual_pnl_usdt IS NOT NULL
+              AND virtual_pnl_usdt != 0
+              {sym_clause if symbol else ""}
+              {time_clause}
+            ORDER BY ts
+        """
+        cur.execute(adapt_query(q), params)
+        closed_rows = [dict(r) for r in cur.fetchall()]
+
+        # 3. BTC 4h OHLCV voor regime berekening (90 dagen lookback)
+        cur.execute(adapt_query("""
+            SELECT ts, close FROM ohlcv_history
+            WHERE symbol = 'BTCUSDT' AND interval = '4h'
+            AND ts > datetime('now', '-90 days')
+            ORDER BY ts
+        """))
+        btc_rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+
+        # Bereken BTC EMA200 voor regime detectie
+        btc_regime_data = []
+        if btc_rows:
+            btc_closes = np.array([float(r["close"]) for r in btc_rows])
+            btc_ema200 = calc_ema(btc_closes, 200)
+            for i, r in enumerate(btc_rows):
+                if not np.isnan(btc_ema200[i]):
+                    ts_val = r["ts"]
+                    # Zorg voor timezone-aware timestamp
+                    if hasattr(ts_val, "tzinfo") and ts_val.tzinfo is None:
+                        ts_val = ts_val.replace(tzinfo=timezone.utc)
+                    btc_regime_data.append((ts_val, float(btc_closes[i]), float(btc_ema200[i])))
+
+        # Ensure alle timestamps timezone-aware zijn voor vergelijking
+        def ensure_tz(ts):
+            if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+                return ts.replace(tzinfo=timezone.utc)
+            return ts
+
+        # 4. Aggregeer stats
+        coin_stats = defaultdict(_group_default)
+        signal_stats = defaultdict(_group_default)
+        regime_stats = defaultdict(_group_default)
+        recent_closed = []
+
+        total_pnl = 0.0
+        gross_profit = 0.0
+        gross_loss = 0.0
+
+        for r in closed_rows:
+            pnl = float(r["virtual_pnl_usdt"])
+            sym = r["symbol"]
+            sig = r.get("signal") or "onbekend"
+            trade_ts = ensure_tz(r["ts"]) if r["ts"] else None
+            regime = _get_regime(trade_ts, btc_regime_data) if trade_ts and btc_regime_data else "unknown"
+
+            total_pnl += pnl
+            if pnl > 0:
+                gross_profit += pnl
+            else:
+                gross_loss += abs(pnl)
+
+            _update_group(coin_stats[sym], pnl)
+            _update_group(signal_stats[sig], pnl)
+            _update_group(regime_stats[regime], pnl)
+
+            recent_closed.append({
+                "ts": r["ts"].isoformat() if hasattr(r["ts"], "isoformat") else str(r["ts"]),
+                "symbol": sym,
+                "signal": sig,
+                "pnl_usdt": round(pnl, 2),
+                "result": "win" if pnl > 0 else "loss",
+                "regime": regime,
+            })
+
+        # Sorteer recent op datum (nieuwste eerst), max 20
+        recent_closed.sort(key=lambda x: x["ts"], reverse=True)
+        recent_closed = recent_closed[:20]
+
+        total_closed = len(closed_rows)
+        wins = sum(1 for r in closed_rows if float(r["virtual_pnl_usdt"]) > 0)
+        balance = float(bal.get("balance", 0.0))
+        peak = float(bal.get("peak_balance", balance))
+        drawdown_pct = (balance - peak) / peak * 100 if peak > 0 else 0.0
+
+        by_coin = sorted(
+            [{"symbol": k, **_fmt_group(v)} for k, v in coin_stats.items()],
+            key=lambda x: x["total_pnl_usdt"], reverse=True
+        )
+        by_signal = sorted(
+            [{"signal": k, **_fmt_group(v)} for k, v in signal_stats.items()],
+            key=lambda x: x["total_pnl_usdt"], reverse=True
+        )
+        by_regime = {k: _fmt_group(v) for k, v in regime_stats.items()}
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "period_days": days,
+            "filter_symbol": symbol.upper() if symbol else None,
+            "summary": {
+                "balance_usdt": round(balance, 2),
+                "peak_balance_usdt": round(peak, 2),
+                "drawdown_pct": round(drawdown_pct, 1),
+                "total_trades_alltime": int(bal.get("total_trades", 0)),
+                "winning_trades_alltime": int(bal.get("winning_trades", 0)),
+                "closed_trades_in_period": total_closed,
+                "wins_in_period": wins,
+                "losses_in_period": total_closed - wins,
+                "winrate_pct": round(wins / total_closed * 100, 1) if total_closed > 0 else 0,
+                "total_pnl_usdt": round(total_pnl, 2),
+                "avg_pnl_usdt": round(total_pnl / total_closed, 2) if total_closed > 0 else 0,
+                "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
+            },
+            "by_coin": by_coin,
+            "by_signal": by_signal,
+            "by_regime": by_regime,
+            "recent_closed": recent_closed,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /features — Feature store: indicator snapshots per trade-entry
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/features")
+def features_list(
+    symbol: Optional[str] = None,
+    signal: Optional[str] = None,
+    regime: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+):
+    """
+    Haal feature snapshots op voor trade-entries.
+    Query params:
+      - symbol (str): filter op coin, bijv. BTCUSDT
+      - signal (str): filter op signaaltype, bijv. BUY
+      - regime (str): filter op btc_regime: bull/bear/chop/unknown
+      - from_date (str): ISO datum, bijv. 2026-02-01
+      - to_date   (str): ISO datum, bijv. 2026-03-01
+      - limit (int): max rijen (default 100)
+    """
+    try:
+        conn = get_conn()
+        cur = dict_cursor(conn)
+
+        clauses = []
+        params  = []
+
+        if symbol:
+            clauses.append("symbol = %s" if is_pg() else "symbol = ?")
+            params.append(symbol.upper())
+        if signal:
+            clauses.append("signal = %s" if is_pg() else "signal = ?")
+            params.append(signal.upper())
+        if regime:
+            clauses.append("btc_regime = %s" if is_pg() else "btc_regime = ?")
+            params.append(regime.lower())
+        if from_date:
+            clauses.append("ts >= %s" if is_pg() else "ts >= ?")
+            params.append(from_date)
+        if to_date:
+            clauses.append("ts <= %s" if is_pg() else "ts <= ?")
+            params.append(to_date)
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        limit_val = min(max(1, limit), 500)
+        ph = "%s" if is_pg() else "?"
+
+        cur.execute(adapt_query(f"""
+            SELECT id, ts, demo_trade_id, symbol, signal, entry_price,
+                   rsi, macd_hist, adx, bb_width,
+                   ema21, ema55, ema200, ema21_dist_pct, ema55_dist_pct, ema200_dist_pct,
+                   crash_score, volume_usdt, atr,
+                   tf_bias, tf_confirm_score, btc_regime,
+                   blocker_context, pnl_1h_pct, pnl_4h_pct, outcome_status
+            FROM trade_features
+            {where}
+            ORDER BY ts DESC
+            LIMIT {ph}
+        """), params + [limit_val])
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+
+        for r in rows:
+            if r.get("ts") and hasattr(r["ts"], "isoformat"):
+                r["ts"] = r["ts"].isoformat()
+            if r.get("blocker_context") and isinstance(r["blocker_context"], str):
+                try:
+                    r["blocker_context"] = json.loads(r["blocker_context"])
+                except Exception:
+                    pass
+
+        return {
+            "count": len(rows),
+            "limit": limit_val,
+            "filters": {"symbol": symbol, "signal": signal, "regime": regime,
+                        "from_date": from_date, "to_date": to_date},
+            "trades": rows,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/features/{trade_id}")
+def feature_by_id(trade_id: int):
+    """Haal de feature snapshot op voor één specifieke trade (via demo_account.id of trade_features.id)."""
+    try:
+        conn = get_conn()
+        cur = dict_cursor(conn)
+        ph = "%s" if is_pg() else "?"
+        cur.execute(adapt_query(f"""
+            SELECT * FROM trade_features
+            WHERE demo_trade_id = {ph} OR id = {ph}
+            ORDER BY ts DESC LIMIT 1
+        """), (trade_id, trade_id))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Geen feature record gevonden voor trade_id={trade_id}")
+        result = dict(row)
+        if result.get("ts") and hasattr(result["ts"], "isoformat"):
+            result["ts"] = result["ts"].isoformat()
+        if result.get("blocker_context") and isinstance(result["blocker_context"], str):
+            try:
+                result["blocker_context"] = json.loads(result["blocker_context"])
+            except Exception:
+                pass
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/features-summary")
+def features_summary(days: int = 30):
+    """
+    Geaggregeerde statistieken uit de feature store.
+    Per regime, per signaal, per RSI-band — met gemiddelde 1h PnL en winrate.
+    """
+    try:
+        conn = get_conn()
+        cur = dict_cursor(conn)
+
+        time_filter = f"AND ts > NOW() - INTERVAL '{days} days'" if is_pg() \
+                      else f"AND ts > datetime('now', '-{days} days')"
+
+        cur.execute(adapt_query(f"""
+            SELECT btc_regime,
+                   COUNT(*) as n,
+                   AVG(rsi) as avg_rsi,
+                   AVG(crash_score) as avg_crash_score,
+                   AVG(ema200_dist_pct) as avg_ema200_dist,
+                   COUNT(pnl_1h_pct) as n_closed,
+                   AVG(pnl_1h_pct) as avg_pnl_1h,
+                   100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(pnl_1h_pct), 0) as winrate_1h
+            FROM trade_features
+            WHERE 1=1 {time_filter}
+            GROUP BY btc_regime ORDER BY n DESC
+        """))
+        by_regime = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(adapt_query(f"""
+            SELECT signal,
+                   COUNT(*) as n,
+                   AVG(rsi) as avg_rsi,
+                   COUNT(pnl_1h_pct) as n_closed,
+                   AVG(pnl_1h_pct) as avg_pnl_1h,
+                   100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                         / NULLIF(COUNT(pnl_1h_pct), 0) as winrate_1h
+            FROM trade_features
+            WHERE 1=1 {time_filter}
+            GROUP BY signal ORDER BY n DESC
+        """))
+        by_signal = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(adapt_query(f"""
+            SELECT
+                CASE
+                    WHEN rsi < 25  THEN 'diep_oversold (<25)'
+                    WHEN rsi < 35  THEN 'oversold (25-35)'
+                    WHEN rsi < 50  THEN 'neutraal_laag (35-50)'
+                    WHEN rsi < 65  THEN 'neutraal_hoog (50-65)'
+                    ELSE                'overbought (>65)'
+                END as rsi_band,
+                COUNT(*) as n,
+                AVG(rsi) as avg_rsi,
+                COUNT(pnl_1h_pct) as n_closed,
+                AVG(pnl_1h_pct) as avg_pnl_1h,
+                100.0 * SUM(CASE WHEN pnl_1h_pct > 0 THEN 1 ELSE 0 END)
+                      / NULLIF(COUNT(pnl_1h_pct), 0) as winrate_1h
+            FROM trade_features
+            WHERE rsi IS NOT NULL {time_filter}
+            GROUP BY rsi_band ORDER BY avg_pnl_1h DESC NULLS LAST
+        """))
+        by_rsi_band = [dict(r) for r in cur.fetchall()]
+
+        conn.close()
+
+        def _r(rows):
+            for row in rows:
+                for k, v in row.items():
+                    if isinstance(v, float):
+                        row[k] = round(v, 3)
+            return rows
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "period_days": days,
+            "by_regime": _r(by_regime),
+            "by_signal": _r(by_signal),
+            "by_rsi_band": _r(by_rsi_band),
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

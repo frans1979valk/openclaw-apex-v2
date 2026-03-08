@@ -1,14 +1,26 @@
 {
   "meta": {
     "lastTouchedVersion": "2026.3.3",
-    "lastTouchedAt": "2026-03-05T19:45:25.186Z"
+    "lastTouchedAt": "2026-03-08T16:45:14.151Z"
   },
-  "env": {
-    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+  "env": {},
+  "wizard": {
+    "lastRunAt": "2026-03-08T13:51:32.830Z",
+    "lastRunVersion": "2026.3.3",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "openai-codex:default": {
+        "provider": "openai-codex",
+        "mode": "oauth"
+      }
+    }
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-sonnet-4-6",
+      "model": "openai-codex/gpt-5.3-codex",
       "models": {
         "anthropic/claude-sonnet-4-6": {
           "alias": "sonnet",
@@ -17,6 +29,7 @@
           }
         }
       },
+      "workspace": "/root/.openclaw/workspace",
       "contextPruning": {
         "mode": "cache-ttl",
         "ttl": "1h"
@@ -33,20 +46,20 @@
         "id": "operator_risk_agent",
         "default": true,
         "name": "Operator Risk",
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "openai-codex/gpt-5.3-codex",
         "skills": [
           "gatekeeper",
           "macro_context_oracle"
         ],
         "identity": {
           "name": "OpenClaw Risk",
-          "emoji": "🛡️"
+          "emoji": "\ud83d\udee1\ufe0f"
         }
       },
       {
         "id": "research_agent",
         "name": "Research",
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "openai-codex/gpt-5.3-codex",
         "skills": [
           "browser",
           "gatekeeper",
@@ -54,20 +67,20 @@
         ],
         "identity": {
           "name": "OpenClaw Research",
-          "emoji": "🔍"
+          "emoji": "\ud83d\udd0d"
         }
       },
       {
         "id": "builder_agent",
         "name": "Builder",
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "openai-codex/gpt-5.3-codex",
         "skills": [
           "github",
           "gatekeeper"
         ],
         "identity": {
           "name": "OpenClaw Builder",
-          "emoji": "🔧"
+          "emoji": "\ud83d\udd27"
         }
       }
     ]
