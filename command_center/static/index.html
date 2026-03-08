@@ -595,25 +595,31 @@ async function loadReplayJobs() {
     const r = await api('GET', '/cc/short/replay/jobs');
     if (!r) return;
     const d = await r.json();
-    const jobs = d.jobs || d || [];
+    // API geeft een object (dict) terug, geen array
+    const jobsObj = d.jobs || d || {};
+    const jobs = typeof jobsObj === 'object' && !Array.isArray(jobsObj)
+      ? Object.entries(jobsObj).map(([id, j]) => ({job_id: id, ...j})).reverse()
+      : jobsObj;
     if (!jobs.length) {
       document.getElementById('replayJobs').innerHTML = '<span class="empty" style="font-size:0.82em">Geen jobs</span>';
       return;
     }
-    let html = '<table><tr><th>Job ID</th><th>Symbol</th><th>Status</th><th>Aangemaakt</th><th>Actie</th></tr>';
+    let html = '<table><tr><th>Job ID</th><th>Type</th><th>Symbol</th><th>Status</th><th>Voortgang</th><th>Actie</th></tr>';
     jobs.slice(0, 10).forEach(j => {
       const stBadge = j.status === 'done' ? 'green' : j.status === 'running' ? 'blue' : 'gray';
+      const typeBadge = j.type === 'sweep' ? 'orange' : 'blue';
       html += `<tr>
-        <td style="font-size:0.8em;color:#8b949e">${escHtml(j.job_id||'?')}</td>
+        <td style="font-size:0.75em;color:#8b949e">${escHtml(j.job_id||'?').substring(0,8)}</td>
+        <td><span class="badge ${typeBadge}" style="font-size:0.7em">${escHtml(j.type||'single')}</span></td>
         <td>${escHtml(j.symbol||'?')}</td>
         <td><span class="badge ${stBadge}">${escHtml(j.status||'?')}</span></td>
-        <td style="color:#8b949e">${fmtTs(j.created_at)}</td>
+        <td style="color:#8b949e;font-size:0.8em">${escHtml(j.progress||'')}</td>
         <td><button class="btn-action" style="padding:2px 8px;font-size:0.75em" onclick="loadReplayResult('${escHtml(j.job_id||'')}')">Resultaat</button></td>
       </tr>`;
     });
     html += '</table>';
     document.getElementById('replayJobs').innerHTML = html;
-  } catch(e) {}
+  } catch(e) { console.error('loadReplayJobs', e); }
 }
 
 async function loadReplayResult(jobId) {
@@ -623,35 +629,63 @@ async function loadReplayResult(jobId) {
     if (!r) return;
     const d = await r.json();
     if (d.status !== 'done') {
-      document.getElementById('replayResult').innerHTML = `<span class="empty">Status: ${escHtml(d.status||'?')} — nog niet klaar</span>`;
+      document.getElementById('replayResult').innerHTML = `<span class="empty">Status: ${escHtml(d.status||'?')} — voortgang: ${escHtml(d.progress||'?')}</span>`;
       if (d.status === 'running' || d.status === 'pending') _startReplayPoll(jobId);
       return;
     }
-    _renderReplayResult(d);
+    _renderReplayResult(d);  // d is directe response
   } catch(e) { document.getElementById('replayResult').innerHTML = '<span class="empty">Fout bij laden</span>'; }
 }
 
 function _renderReplayResult(d) {
-  const res = d.result || d;
+  // d is de volledige job response (status, type, kpi/top5, ...)
   let html = '<div style="font-size:0.85em;margin-top:6px">';
-  if (res.sweep) {
-    const top5 = res.top5 || [];
-    html += '<strong>Top 5 configs (sweep):</strong><table style="margin-top:6px"><tr><th>delta</th><th>vol</th><th>trail</th><th>PF</th><th>WR%</th><th>trades</th><th>max_dd</th></tr>';
-    top5.forEach(c => {
-      html += `<tr><td>${c.delta_thr}</td><td>${c.vol_ratio_thr}</td><td>${c.trail_pct}</td>
-        <td style="color:#3fb950">${parseFloat(c.profit_factor||0).toFixed(2)}</td>
-        <td>${parseFloat(c.win_rate||0).toFixed(1)}%</td>
-        <td>${c.total_trades||0}</td>
-        <td style="color:#f85149">${fmtPct(c.max_dd_pct)}</td></tr>`;
+
+  if (d.type === 'sweep' && d.top5) {
+    // Sweep: top5 array met {delta, vol_ratio, trail, pf, winrate, n, max_dd}
+    html += `<strong>Sweep resultaat — ${d.valid_configs||0}/${d.total_configs||81} configs, top 5:</strong>`;
+    html += '<table style="margin-top:6px"><tr><th>delta</th><th>vol</th><th>trail</th><th>PF</th><th>WR%</th><th>n</th><th>max_dd</th></tr>';
+    d.top5.forEach(c => {
+      html += `<tr>
+        <td>${c.delta}</td><td>${c.vol_ratio}</td><td>${c.trail}</td>
+        <td style="color:#3fb950">${parseFloat(c.pf||0).toFixed(2)}</td>
+        <td>${parseFloat(c.winrate||0).toFixed(1)}%</td>
+        <td>${c.n||0}</td>
+        <td style="color:#f85149">${c.max_dd != null ? '+'+parseFloat(c.max_dd).toFixed(2)+'%' : '—'}</td>
+      </tr>`;
     });
     html += '</table>';
+  } else if (d.kpi) {
+    // Single: kpi object met {n, winrate_pct, profit_factor, expectancy_pct, max_drawdown_pct}
+    const k = d.kpi;
+    html += `<div class="kv"><span class="k">Trades</span><span class="v">${k.n||0}</span></div>`;
+    html += `<div class="kv"><span class="k">Win Rate</span><span class="v">${parseFloat(k.winrate_pct||0).toFixed(1)}%</span></div>`;
+    html += `<div class="kv"><span class="k">Profit Factor</span><span class="v" style="color:${(k.profit_factor||0)>=1?'#3fb950':'#f85149'}">${parseFloat(k.profit_factor||0).toFixed(3)}</span></div>`;
+    html += `<div class="kv"><span class="k">Expectancy</span><span class="v">${parseFloat(k.expectancy_pct||0).toFixed(3)}%</span></div>`;
+    html += `<div class="kv"><span class="k">Max DD</span><span class="v" style="color:#f85149">${parseFloat(d.max_drawdown_pct||0).toFixed(2)}%</span></div>`;
+    html += `<div class="kv"><span class="k">Gem. duur</span><span class="v">${parseFloat(k.avg_duration_h||0).toFixed(1)}h</span></div>`;
+    // Exit reasons
+    if (k.exit_reasons) {
+      const er = Object.entries(k.exit_reasons).map(([k,v]) => `${k}: ${v}`).join(' · ');
+      html += `<div class="kv"><span class="k">Exit redenen</span><span class="v" style="font-size:0.85em;color:#8b949e">${escHtml(er)}</span></div>`;
+    }
+    // Rejects samenvatting
+    if (d.reject_total) {
+      html += `<div class="kv"><span class="k">Geweigerd</span><span class="v" style="color:#8b949e">${d.reject_total} entries (mode: ${(d.rejects||{}).mode||0})</span></div>`;
+    }
+    // By regime
+    if (d.by_regime && Object.keys(d.by_regime).length) {
+      html += '<div style="margin-top:8px;font-size:0.82em;color:#8b949e"><strong>Per regime:</strong></div>';
+      html += '<table style="margin-top:4px;font-size:0.8em"><tr><th>Regime</th><th>n</th><th>WR%</th><th>PF</th><th>Exp%</th></tr>';
+      Object.entries(d.by_regime).forEach(([reg, r]) => {
+        html += `<tr><td>${escHtml(reg)}</td><td>${r.n}</td><td>${parseFloat(r.winrate_pct||0).toFixed(1)}%</td><td style="color:${(r.profit_factor||0)>=1?'#3fb950':'#f85149'}">${parseFloat(r.profit_factor||0).toFixed(2)}</td><td>${parseFloat(r.expectancy_pct||0).toFixed(3)}%</td></tr>`;
+      });
+      html += '</table>';
+    }
+    if (d.note) html += `<div style="margin-top:6px;font-size:0.75em;color:#484f58">${escHtml(d.note)}</div>`;
   } else {
-    const kpi = res.kpi || res;
-    html += `<div class="kv"><span class="k">Profit Factor</span><span class="v">${parseFloat(kpi.profit_factor||0).toFixed(2)}</span></div>`;
-    html += `<div class="kv"><span class="k">Win Rate</span><span class="v">${parseFloat(kpi.win_rate||0).toFixed(1)}%</span></div>`;
-    html += `<div class="kv"><span class="k">Trades</span><span class="v">${kpi.total_trades||0}</span></div>`;
-    html += `<div class="kv"><span class="k">Expectancy</span><span class="v">${parseFloat(kpi.expectancy||0).toFixed(3)}%</span></div>`;
-    html += `<div class="kv"><span class="k">Max DD</span><span class="v" style="color:#f85149">${fmtPct(kpi.max_dd_pct)}</span></div>`;
+    html += '<span class="empty">Onbekend resultaat formaat</span>';
+    html += `<pre style="font-size:0.7em;color:#8b949e;margin-top:6px">${escHtml(JSON.stringify(d, null, 2).substring(0, 500))}</pre>`;
   }
   html += '</div>';
   document.getElementById('replayResult').innerHTML = html;
@@ -742,9 +776,9 @@ function _startReplayPoll(jobId) {
       const d = await r.json();
       if (d.status === 'done') {
         clearInterval(_replayPollTimer);
-        document.getElementById('replayStatus').textContent = 'Klaar!';
+        document.getElementById('replayStatus').textContent = '✓ Klaar!';
         await loadReplayJobs();
-        _renderReplayResult(d);
+        _renderReplayResult(d);  // d is de volledige response, niet d.result
       } else if (d.status === 'error') {
         clearInterval(_replayPollTimer);
         document.getElementById('replayStatus').textContent = 'Job mislukt: ' + (d.error || '?');
