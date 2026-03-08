@@ -2,6 +2,7 @@
 import os, json, logging, time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from collections import deque
 import numpy as np
 import requests as req
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -418,11 +419,13 @@ def startup():
                       id="initial_enrich")
     scheduler.start()
     log.info(f"Scheduler gestart: update elke {UPDATE_INTERVAL_MINUTES} min, coin-watcher elke 30 min")
+    _start_ws_feed()
 
 
 @app.on_event("shutdown")
 def shutdown():
     scheduler.shutdown()
+    _ws_stop()
 
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
@@ -1622,3 +1625,359 @@ def coin_watcher_status():
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ── Realtime WebSocket Feed ───────────────────────────────────────────────────
+
+import websocket as _ws_lib  # websocket-client
+
+_BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
+_WS_CANDLE_IV   = "1m"
+_WS_BUF_SIZE    = 300
+
+_live_buffers: dict[str, deque] = {}       # symbol → deque of candle dicts
+_live_buf_lock = threading.Lock()
+_live_last_ts:  dict[str, float] = {}      # symbol → epoch float van laatste tick
+
+_ws_state = {
+    "connected":    False,
+    "fallback_mode": False,
+    "drops":        [],          # epoch floats van reconnects
+    "running":      False,
+}
+_ws_instance = None
+
+
+def _ws_drops_1h() -> int:
+    cutoff = time.time() - 3600
+    return sum(1 for t in _ws_state["drops"] if t > cutoff)
+
+
+def _ws_on_message(ws, message):
+    try:
+        data  = json.loads(message)
+        kline = data.get("data", {}).get("k", {})
+        sym   = kline.get("s", "").upper()
+        if sym and sym in _live_buffers:
+            candle = {
+                "ts":     int(kline["t"]),
+                "open":   float(kline["o"]),
+                "high":   float(kline["h"]),
+                "low":    float(kline["l"]),
+                "close":  float(kline["c"]),
+                "volume": float(kline["v"]),
+                "closed": bool(kline["x"]),
+            }
+            with _live_buf_lock:
+                buf = _live_buffers[sym]
+                if buf and buf[-1]["ts"] == candle["ts"]:
+                    buf[-1] = candle
+                else:
+                    buf.append(candle)
+                _live_last_ts[sym] = time.time()
+    except Exception as e:
+        log.warning(f"[ws] Parse fout: {e}")
+
+
+def _ws_on_error(ws, err):
+    log.warning(f"[ws] Fout: {err}")
+
+
+def _ws_on_close(ws, code, msg):
+    _ws_state["connected"] = False
+    _ws_state["drops"].append(time.time())
+    _ws_state["drops"] = _ws_state["drops"][-100:]
+    log.warning(f"[ws] Verbinding verbroken (code={code})")
+
+
+def _ws_on_open(ws):
+    _ws_state["connected"] = True
+    _ws_state["fallback_mode"] = False
+    log.info(f"[ws] Verbonden — {len(_live_buffers)} symbols")
+
+
+def _ws_seed_rest():
+    """Vul buffers met REST data als baseline (ook bij WS-uitval)."""
+    for sym in list(_live_buffers.keys()):
+        try:
+            rows = fetch_ohlcv(sym, _WS_CANDLE_IV, limit=_WS_BUF_SIZE)
+            with _live_buf_lock:
+                buf = _live_buffers[sym]
+                buf.clear()
+                for row in rows:
+                    buf.append({
+                        "ts": int(row[0]), "open": float(row[1]), "high": float(row[2]),
+                        "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]),
+                        "closed": True,
+                    })
+                _live_last_ts[sym] = time.time()
+        except Exception as e:
+            log.warning(f"[ws-seed] {sym}: {e}")
+
+
+def _ws_run_loop():
+    global _ws_instance
+    symbols_lower = [s.lower() for s in _live_buffers.keys()]
+    streams = "/".join(f"{s}@kline_{_WS_CANDLE_IV}" for s in symbols_lower)
+    url = f"{_BINANCE_WS_URL}?streams={streams}"
+    while _ws_state["running"]:
+        try:
+            _ws_instance = _ws_lib.WebSocketApp(
+                url,
+                on_message=_ws_on_message,
+                on_error=_ws_on_error,
+                on_close=_ws_on_close,
+                on_open=_ws_on_open,
+            )
+            _ws_instance.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            log.warning(f"[ws] Connect fout: {e}")
+        _ws_state["connected"] = False
+        if _ws_state["running"]:
+            time.sleep(5)
+            log.info("[ws] Herverbinden...")
+            _ws_seed_rest()
+
+
+def _ws_fallback_loop():
+    """Pollt REST als WS-lag > 60s of WS down is."""
+    while _ws_state["running"]:
+        time.sleep(30)
+        if _ws_state["connected"]:
+            lags = [time.time() - _live_last_ts.get(s, 0) for s in _live_buffers]
+            if lags and max(lags) > 60:
+                _ws_state["fallback_mode"] = True
+                log.warning("[ws-fallback] Lag > 60s — REST fallback")
+                _ws_seed_rest()
+            elif _ws_state["fallback_mode"]:
+                _ws_state["fallback_mode"] = False
+        else:
+            _ws_seed_rest()
+
+
+def _start_ws_feed():
+    for sym in SAFE_COINS:
+        _live_buffers[sym.upper()] = deque(maxlen=_WS_BUF_SIZE)
+        _live_last_ts[sym.upper()] = 0.0
+    _ws_state["running"] = True
+    _ws_seed_rest()
+    threading.Thread(target=_ws_run_loop,      daemon=True, name="ws-feed").start()
+    threading.Thread(target=_ws_fallback_loop, daemon=True, name="ws-fallback").start()
+    log.info(f"[ws] Live feed gestart voor {len(_live_buffers)} symbols")
+
+
+def _ws_stop():
+    _ws_state["running"] = False
+    if _ws_instance:
+        try:
+            _ws_instance.close()
+        except Exception:
+            pass
+
+
+# ── Snapshot helper ───────────────────────────────────────────────────────────
+
+def _compute_snapshot(symbol: str) -> dict:
+    sym = symbol.upper()
+    if sym not in _live_buffers:
+        raise HTTPException(404, f"Symbol {sym} niet in live feed")
+
+    with _live_buf_lock:
+        buf = _live_buffers[sym]
+        latest = dict(buf[-1]) if buf else None
+    if not latest:
+        raise HTTPException(503, f"Geen live data voor {sym} — feed seed bezig")
+
+    lag_ms = round((time.time() - _live_last_ts.get(sym, 0)) * 1000, 0)
+    price  = latest["close"]
+
+    # Indicators uit DB (1h — meest recent)
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT i.rsi, i.macd_hist, i.bb_width, i.bb_position,
+               i.ema21, i.ema55, i.ema200, i.ema_bull,
+               i.adx, i.stoch_rsi_k, i.atr, i.volume_ratio, i.rsi_zone
+        FROM indicators_data i
+        WHERE i.symbol=? AND i.interval='1h'
+        ORDER BY i.ts DESC LIMIT 1
+    """), (sym,))
+    row = cur.fetchone()
+
+    # BTC EMA200 + close voor regime
+    cur.execute(adapt_query("""
+        SELECT i.ema200, o.close
+        FROM indicators_data i
+        LEFT JOIN ohlcv_data o ON o.symbol=i.symbol AND o.interval=i.interval AND o.ts=i.ts
+        WHERE i.symbol='BTCUSDT' AND i.interval='4h'
+        ORDER BY i.ts DESC LIMIT 1
+    """))
+    btc_row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(503, f"Geen indicator data voor {sym} — wacht op update cycle")
+
+    rsi, macd_hist, bb_width, bb_pos, ema21, ema55, ema200, ema_bull, adx, stoch_k, atr, vol_ratio, rsi_zone = row
+    rsi       = float(rsi or 50)
+    macd_hist = float(macd_hist or 0)
+    bb_width  = float(bb_width or 0)
+    adx       = float(adx or 0)
+    atr       = float(atr or 0)
+    ema21     = float(ema21 or price)
+    ema55     = float(ema55 or price)
+    ema200    = float(ema200 or price)
+    stoch_k   = float(stoch_k or 50)
+    vol_ratio = float(vol_ratio or 1.0)
+
+    # BTC regime
+    if btc_row and btc_row[0] and btc_row[1]:
+        btc_ema200_val = float(btc_row[0])
+        btc_close_val  = float(btc_row[1])
+        btc_dist = (btc_close_val - btc_ema200_val) / btc_ema200_val * 100
+        btc_regime = "bull" if btc_dist > 3 else ("bear" if btc_dist < -3 else "chop")
+    else:
+        btc_regime = "unknown"
+
+    # ── trend_bot ─────────────────────────────────────────────────────────
+    ema_dist_21  = (price - ema21)  / ema21  * 100 if ema21  else 0.0
+    ema_dist_55  = (price - ema55)  / ema55  * 100 if ema55  else 0.0
+    ema_dist_200 = (price - ema200) / ema200 * 100 if ema200 else 0.0
+
+    trend_score   = 0.0
+    trend_signals = []
+    if ema_bull:
+        trend_score += 0.4
+        trend_signals.append("EMA21>EMA55>EMA200 (bull)")
+    else:
+        trend_score -= 0.4
+        trend_signals.append("EMA alignment bearish")
+    if btc_regime == "bull":
+        trend_score += 0.3
+        trend_signals.append("BTC regime bull")
+    elif btc_regime == "bear":
+        trend_score -= 0.3
+        trend_signals.append("BTC regime bear")
+    if adx > 25:
+        trend_signals.append(f"ADX={adx:.1f} (trending)")
+
+    # ── momentum_bot ──────────────────────────────────────────────────────
+    momentum_score   = 0.0
+    momentum_signals = []
+    if rsi < 30:
+        momentum_score += 0.5
+        momentum_signals.append(f"RSI={rsi:.1f} oversold")
+    elif rsi > 70:
+        momentum_score -= 0.5
+        momentum_signals.append(f"RSI={rsi:.1f} overbought")
+    else:
+        momentum_score += 0.15 if rsi < 45 else (-0.15 if rsi > 55 else 0.0)
+    if macd_hist > 0:
+        momentum_score += 0.3
+        momentum_signals.append("MACD hist positief")
+    else:
+        momentum_score -= 0.3
+        momentum_signals.append("MACD hist negatief")
+    if stoch_k < 20:
+        momentum_score += 0.2
+        momentum_signals.append(f"StochRSI K={stoch_k:.1f} oversold")
+    elif stoch_k > 80:
+        momentum_score -= 0.2
+        momentum_signals.append(f"StochRSI K={stoch_k:.1f} overbought")
+
+    # ── volatility_bot ────────────────────────────────────────────────────
+    bb_squeeze       = bb_width < 2.0
+    vol_surge        = vol_ratio > 2.0
+    volatility_signals = []
+    if bb_squeeze:
+        volatility_signals.append(f"BB squeeze (width={bb_width:.2f}%)")
+    if vol_surge:
+        volatility_signals.append(f"Volume surge ({vol_ratio:.1f}x)")
+    if atr > 0:
+        volatility_signals.append(f"ATR={atr:.4f}")
+
+    # ── fusion ────────────────────────────────────────────────────────────
+    fusion_score = trend_score * 0.4 + momentum_score * 0.4
+    if bb_squeeze and vol_surge:
+        fusion_score *= 1.2
+    fusion_score = max(-1.0, min(1.0, fusion_score))
+    confidence   = round(abs(fusion_score), 3)
+
+    if fusion_score >= 0.35:
+        action = "BUY"
+    elif fusion_score <= -0.35:
+        action = "SELL"
+    elif confidence < 0.1:
+        action = "HOLD"
+    else:
+        action = "WARN"
+
+    top3 = (trend_signals + momentum_signals + volatility_signals)[:3]
+
+    return {
+        "symbol":     sym,
+        "price":      price,
+        "lag_ms":     lag_ms,
+        "ts":         datetime.fromtimestamp(latest["ts"] / 1000, tz=timezone.utc).isoformat(),
+        "btc_regime": btc_regime,
+        "trend_bot": {
+            "score":           round(trend_score, 3),
+            "ema_bull":        bool(ema_bull),
+            "ema_dist_21_pct": round(ema_dist_21, 2),
+            "ema_dist_55_pct": round(ema_dist_55, 2),
+            "ema_dist_200_pct":round(ema_dist_200, 2),
+            "adx":             round(adx, 1),
+            "signals":         trend_signals,
+        },
+        "momentum_bot": {
+            "score":      round(momentum_score, 3),
+            "rsi":        round(rsi, 1),
+            "rsi_zone":   rsi_zone,
+            "macd_hist":  round(macd_hist, 6),
+            "stoch_rsi_k":round(stoch_k, 1),
+            "signals":    momentum_signals,
+        },
+        "volatility_bot": {
+            "bb_width":   round(bb_width, 2),
+            "bb_position":bb_pos,
+            "atr":        round(atr, 6),
+            "volume_ratio":round(vol_ratio, 2),
+            "bb_squeeze": bb_squeeze,
+            "vol_surge":  vol_surge,
+            "signals":    volatility_signals,
+        },
+        "fusion": {
+            "action":     action,
+            "score":      round(fusion_score, 3),
+            "confidence": confidence,
+            "explain":    top3,
+        },
+    }
+
+
+# ── Realtime endpoints ────────────────────────────────────────────────────────
+
+@app.get("/realtime/snapshot")
+def realtime_snapshot(symbol: str = "BTCUSDT"):
+    """Realtime snapshot: live prijs + trend/momentum/volatility scores + fusion output."""
+    return _compute_snapshot(symbol)
+
+
+@app.get("/realtime/health")
+def realtime_health():
+    """WS feed health: connectie, lag, drops, fallback status."""
+    now = time.time()
+    lags = {sym: round((now - ts) * 1000, 0)
+            for sym, ts in _live_last_ts.items() if ts > 0}
+    max_lag  = max(lags.values()) if lags else -1
+    avg_lag  = round(sum(lags.values()) / len(lags), 0) if lags else -1
+    worst    = max(lags, key=lags.get) if lags else None
+    return {
+        "ws_connected":      _ws_state["connected"],
+        "fallback_mode":     _ws_state["fallback_mode"],
+        "drops_1h":          _ws_drops_1h(),
+        "max_lag_ms":        max_lag,
+        "avg_lag_ms":        avg_lag,
+        "worst_symbol":      worst,
+        "symbols_tracking":  len(_live_buffers),
+    }
