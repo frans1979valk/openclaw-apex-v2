@@ -1981,3 +1981,280 @@ def realtime_health():
         "worst_symbol":      worst,
         "symbols_tracking":  len(_live_buffers),
     }
+
+
+# ── Fase 2: Level Replay ──────────────────────────────────────────────────────
+
+@app.get("/replay/level")
+def replay_level(
+    symbol: str,
+    level: float,
+    tolerance_pct: float = 0.25,
+    window_hours: int = 4,
+):
+    """
+    Historische level-replay: hoe reageerde de prijs elke keer dat dit niveau
+    werd aangetikt?
+
+    Gebruikt ohlcv_data (1h candles). Returns 1h en 4h na elke touch.
+    window_hours bepaalt max candles voor/na die getoond worden in closest_matches.
+    """
+    sym = symbol.upper()
+    lo  = level * (1 - tolerance_pct / 100)
+    hi  = level * (1 + tolerance_pct / 100)
+
+    conn = get_conn()
+    cur  = conn.cursor()
+
+    # Haal alle 1h candles op voor dit symbol, gesorteerd op tijd
+    cur.execute(adapt_query("""
+        SELECT ts, open, high, low, close
+        FROM ohlcv_data
+        WHERE symbol=? AND interval='1h'
+        ORDER BY ts ASC
+    """), (sym,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        raise HTTPException(404, f"Geen OHLCV data voor {sym}")
+
+    # Bouw ts→close map voor future price lookup
+    ts_list    = [r[0] for r in rows]
+    close_map  = {r[0]: float(r[4]) for r in rows}
+    ts_indexed = {ts: i for i, ts in enumerate(ts_list)}
+
+    def future_close(idx: int, hours: int) -> float | None:
+        target_idx = idx + hours  # 1h candles → +1 idx = +1h
+        if target_idx < len(ts_list):
+            return close_map[ts_list[target_idx]]
+        return None
+
+    # Vind candles waarbij low ≤ level ≤ high (level aangetikt) OF close binnen tolerantie
+    matches = []
+    for i, row in enumerate(rows):
+        ts, o, h, l, c = row
+        o, h, l, c = float(o), float(h), float(l), float(c)
+        touched = (l <= hi and h >= lo)  # candle raakt het level aan
+        if not touched:
+            continue
+
+        p1h = future_close(i, 1)
+        p4h = future_close(i, 4)
+        if p1h is None:
+            continue
+
+        ret_1h = round((p1h / c - 1) * 100, 3)
+        ret_4h = round((p4h / c - 1) * 100, 3) if p4h else None
+        matches.append({
+            "ts":      ts.isoformat(),
+            "close":   round(c, 6),
+            "ret_1h":  ret_1h,
+            "ret_4h":  ret_4h,
+            "win_1h":  ret_1h > 0,
+            "win_4h":  ret_4h > 0 if ret_4h is not None else None,
+            "dist_pct":round((c - level) / level * 100, 3),
+        })
+
+    if not matches:
+        return {
+            "symbol": sym, "level": level, "tolerance_pct": tolerance_pct,
+            "matches_count": 0,
+            "message": "Geen historische touches op dit niveau gevonden",
+        }
+
+    n         = len(matches)
+    rets_1h   = [m["ret_1h"] for m in matches]
+    rets_4h   = [m["ret_4h"] for m in matches if m["ret_4h"] is not None]
+    wins_1h   = sum(1 for m in matches if m["win_1h"])
+    wins_4h   = sum(1 for m in matches if m["win_4h"])
+    n_4h      = len(rets_4h)
+
+    # Confidence: gebaseerd op n en consistentie van 1h winrate
+    wr_1h     = wins_1h / n
+    confidence = min(1.0, round((n / 30) * 0.5 + abs(wr_1h - 0.5) * 2 * 0.5, 3))
+
+    # Closest matches: max 5, gesorteerd op |dist_pct|
+    closest = sorted(matches, key=lambda m: abs(m["dist_pct"]))[:5]
+
+    return {
+        "symbol":           sym,
+        "level":            level,
+        "tolerance_pct":    tolerance_pct,
+        "matches_count":    n,
+        "avg_return_1h":    round(sum(rets_1h) / n, 3),
+        "avg_return_4h":    round(sum(rets_4h) / n_4h, 3) if n_4h else None,
+        "winrate_1h":       round(wr_1h * 100, 1),
+        "winrate_4h":       round(wins_4h / n_4h * 100, 1) if n_4h else None,
+        "confidence":       confidence,
+        "closest_matches":  closest,
+    }
+
+
+# ── Fase 2: Pattern Compare ───────────────────────────────────────────────────
+
+class PatternCompareRequest(BaseModel):
+    symbol: str
+    interval: str = "1h"
+    cross_symbol: bool = False   # ook andere coins gebruiken
+
+
+@app.post("/pattern/compare")
+def pattern_compare(req: PatternCompareRequest):
+    """
+    Vergelijk huidig patroon met historische precedenten uit pattern_results.
+
+    Clustert op: rsi_zone, macd_direction, ema_alignment, btc_trend, adx_strength.
+    Geeft top 3 clusters + historische uitkomsten + action suggestion.
+    """
+    sym = req.symbol.upper()
+
+    # Haal huidige indicators op
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT rsi_zone, macd_hist, ema_bull, adx, bb_position, rsi, ts
+        FROM indicators_data
+        WHERE symbol=? AND interval=?
+        ORDER BY ts DESC LIMIT 1
+    """), (sym, req.interval))
+    row = cur.fetchone()
+
+    # BTC trend voor context
+    cur.execute(adapt_query("""
+        SELECT ema_bull FROM indicators_data
+        WHERE symbol='BTCUSDT' AND interval=?
+        ORDER BY ts DESC LIMIT 1
+    """), (req.interval,))
+    btc_row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(404, f"Geen indicator data voor {sym} {req.interval}")
+
+    rsi_zone, macd_hist, ema_bull, adx, bb_pos, rsi, ts = row
+    macd_hist = float(macd_hist or 0)
+    adx       = float(adx or 0)
+    rsi       = float(rsi or 50)
+
+    cur_macd_dir  = "bullish" if macd_hist > 0 else "bearish"
+    cur_ema_align = "bull" if ema_bull else "bear"
+    cur_adx_str   = "strong" if adx > 25 else "weak"
+    cur_btc_trend = "bull" if (btc_row and btc_row[0]) else "bear"
+    cur_rsi_zone  = rsi_zone or "neutral_low"
+
+    current_pattern = {
+        "rsi_zone":      cur_rsi_zone,
+        "macd_direction":cur_macd_dir,
+        "ema_alignment": cur_ema_align,
+        "adx_strength":  cur_adx_str,
+        "btc_trend":     cur_btc_trend,
+        "rsi":           round(rsi, 1),
+        "ts":            ts.isoformat() if ts else None,
+    }
+
+    # Query pattern_results — exact match eerst, dan versoepeld
+    conn = get_conn()
+    cur  = conn.cursor()
+
+    sym_filter = "" if req.cross_symbol else "AND symbol=?"
+    sym_params = () if req.cross_symbol else (sym,)
+
+    # Cluster 1: exact (alle 5 dimensies)
+    cur.execute(adapt_query(f"""
+        SELECT symbol, rsi_zone, macd_direction, ema_alignment, adx_strength, btc_trend,
+               COUNT(*) as n,
+               AVG(pnl_1h) as avg_1h,
+               AVG(pnl_4h) as avg_4h,
+               AVG(CASE WHEN was_win THEN 1.0 ELSE 0.0 END) * 100 as winrate,
+               MIN(pnl_1h) as worst_1h,
+               MAX(pnl_1h) as best_1h
+        FROM pattern_results
+        WHERE rsi_zone=? AND macd_direction=? AND ema_alignment=?
+          AND adx_strength=? AND btc_trend=?
+          {sym_filter}
+        GROUP BY symbol, rsi_zone, macd_direction, ema_alignment, adx_strength, btc_trend
+        ORDER BY n DESC
+        LIMIT 5
+    """), (cur_rsi_zone, cur_macd_dir, cur_ema_align, cur_adx_str, cur_btc_trend) + sym_params)
+    exact_rows = cur.fetchall()
+
+    # Cluster 2: versoepeld — zelfde rsi_zone + ema_alignment + btc_trend (zonder adx/macd)
+    cur.execute(adapt_query(f"""
+        SELECT rsi_zone, ema_alignment, btc_trend,
+               COUNT(*) as n,
+               AVG(pnl_1h) as avg_1h,
+               AVG(pnl_4h) as avg_4h,
+               AVG(CASE WHEN was_win THEN 1.0 ELSE 0.0 END) * 100 as winrate
+        FROM pattern_results
+        WHERE rsi_zone=? AND ema_alignment=? AND btc_trend=?
+          {sym_filter}
+        GROUP BY rsi_zone, ema_alignment, btc_trend
+        ORDER BY n DESC
+        LIMIT 1
+    """), (cur_rsi_zone, cur_ema_align, cur_btc_trend) + sym_params)
+    broad_row = cur.fetchone()
+    conn.close()
+
+    def _fmt_cluster(row, kind: str) -> dict:
+        if kind == "exact":
+            sym_c, rz, md, ea, ads, bt, n, a1, a4, wr, w1, b1 = row
+            label = f"{sym_c} {rz}+{md}+{ea}+{ads}+{bt}"
+        else:
+            rz, ea, bt, n, a1, a4, wr = row
+            sym_c, ads, md, w1, b1 = sym, "?", "?", None, None
+            label = f"{sym_c} {rz}+{ea}+{bt} (breed)"
+        n = int(n or 0)
+        return {
+            "label":        label,
+            "kind":         kind,
+            "precedents":   n,
+            "avg_pnl_1h":  round(float(a1 or 0), 3),
+            "avg_pnl_4h":  round(float(a4 or 0), 3) if a4 else None,
+            "winrate_1h":  round(float(wr or 0), 1),
+            "worst_1h":    round(float(w1 or 0), 3) if w1 is not None else None,
+            "best_1h":     round(float(b1 or 0), 3) if b1 is not None else None,
+        }
+
+    clusters = []
+    for row in exact_rows:
+        clusters.append(_fmt_cluster(row, "exact"))
+    if broad_row:
+        clusters.append(_fmt_cluster(broad_row, "broad"))
+
+    # Action suggestion: gebaseerd op best cluster met genoeg precedenten
+    action = "INSUFFICIENT_DATA"
+    action_reason = "Onvoldoende precedenten"
+    best = next((c for c in clusters if c["precedents"] >= 10), None)
+    if best:
+        wr = best["winrate_1h"]
+        avg = best["avg_pnl_1h"]
+        if wr >= 55 and avg > 0:
+            action = "BUY"
+            action_reason = f"Winrate {wr:.1f}% met avg +{avg:.2f}% in {best['precedents']} gevallen"
+        elif wr <= 40 and avg < 0:
+            action = "AVOID"
+            action_reason = f"Lage winrate {wr:.1f}%, avg {avg:.2f}% in {best['precedents']} gevallen"
+        else:
+            action = "NEUTRAL"
+            action_reason = f"Gemengd beeld: winrate {wr:.1f}%, avg {avg:.2f}%"
+
+    # Afwijkingen t.o.v. meest voorkomende patroon in deze symbol
+    deviations = []
+    if cur_btc_trend == "bear" and cur_ema_align == "bull":
+        deviations.append("EMA bull maar BTC bear — conflicterend")
+    if cur_rsi_zone == "oversold" and cur_macd_dir == "bearish":
+        deviations.append("RSI oversold maar MACD nog bearish — mogelijk vroeg")
+    if cur_adx_str == "strong" and cur_btc_trend == "bear":
+        deviations.append("Sterke trend (ADX) in bear-regime — verhoogd risico")
+
+    return {
+        "symbol":          sym,
+        "interval":        req.interval,
+        "current_pattern": current_pattern,
+        "clusters":        clusters,
+        "action":          action,
+        "action_reason":   action_reason,
+        "deviations":      deviations,
+        "cross_symbol":    req.cross_symbol,
+    }
