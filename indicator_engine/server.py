@@ -2844,3 +2844,439 @@ def pattern_compare(req: PatternCompareRequest):
         "deviations":      deviations,
         "cross_symbol":    req.cross_symbol,
     }
+
+
+# ── Short Backtest / Replay Engine ───────────────────────────────────────────
+
+import uuid as _uuid
+
+_replay_jobs: dict = {}   # job_id → result dict
+
+
+def _simulate_short_backtest(
+    symbol: str,
+    days: int,
+    delta_thr: float,
+    vol_ratio_thr: float,
+    trail_pct: float,
+    hard_stop_pct: float,
+    time_stop_h: int,
+    cooldown_h: float,
+    max_spread_bps: float,
+    max_slip_bps: float,
+    max_day_dd_pct: float,
+    max_open: int,
+) -> dict:
+    """
+    Core backtest simulation — exact dezelfde guard-volgorde als live engine.
+    Werkt op 1h candles (historische data). Time stop in uren.
+    """
+    sym = symbol.upper()
+
+    # ── Data laden ────────────────────────────────────────────────────────────
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(adapt_query("""
+        SELECT ts, open, high, low, close, volume
+        FROM ohlcv_data
+        WHERE symbol=? AND interval='1h'
+          AND ts >= NOW() - (? * INTERVAL '1 day')
+        ORDER BY ts ASC
+    """), (sym, days))
+    raw = cur.fetchall()
+
+    # BTC 4h regime — ts → regime string
+    cur.execute(adapt_query("""
+        SELECT o.ts, i.ema200, o.close
+        FROM ohlcv_data o
+        JOIN indicators_data i ON i.symbol=o.symbol AND i.interval=o.interval AND i.ts=o.ts
+        WHERE o.symbol='BTCUSDT' AND o.interval='4h'
+          AND o.ts >= NOW() - (? * INTERVAL '1 day')
+        ORDER BY o.ts ASC
+    """), (days,))
+    btc_rows = cur.fetchall()
+    conn.close()
+
+    if len(raw) < 50:
+        return {"error": f"Onvoldoende data voor {sym} ({len(raw)} candles)"}
+
+    # BTC regime map: voor elke 1h candle → meest recente 4h regime
+    btc_regime_ts = []
+    for r in btc_rows:
+        ts, ema200, close = r
+        if ema200 and close:
+            dist = (float(close) - float(ema200)) / float(ema200) * 100
+            regime = "bull" if dist > 3 else ("bear" if dist < -3 else "chop")
+        else:
+            regime = "unknown"
+        btc_regime_ts.append((ts, regime))
+
+    def get_regime(ts) -> str:
+        regime = "unknown"
+        for r_ts, r_reg in btc_regime_ts:
+            if r_ts <= ts:
+                regime = r_reg
+            else:
+                break
+        return regime
+
+    # Volume 20-period rolling avg
+    closes  = [float(r[4]) for r in raw]
+    highs   = [float(r[2]) for r in raw]
+    lows    = [float(r[3]) for r in raw]
+    volumes = [float(r[5]) for r in raw]
+    tss     = [r[0] for r in raw]
+
+    # ── Simulatie state ───────────────────────────────────────────────────────
+    open_positions = []
+    trades         = []
+    rejects        = {
+        "mode": 0, "day_dd": 0, "delta": 0, "volume": 0,
+        "max_open": 0, "cooldown": 0, "spread": 0, "slippage": 0,
+    }
+
+    equity         = 1000.0        # start short-pot
+    equity_curve   = [equity]
+    peak_equity    = equity
+    max_dd         = 0.0
+    day_dd         = 0.0
+    day_dd_disabled = False
+    last_dd_date   = None
+    last_entry_ts  = {}            # symbol → simulation index of last entry
+    risk_per_trade = equity * (0.015)  # 1.5% risk per trade
+
+    # Mode reconstructie: voor 1h backtest geldt panic als delta <= delta_thr
+    # (Live mode is 1m-schaal; op 1h granulariteit gebruiken we delta als proxy)
+    def _recon_mode(i: int, current_delta: float) -> str:
+        return "panic" if current_delta <= delta_thr else "normal"
+
+    for i in range(20, len(raw)):
+        ts     = tss[i]
+        close  = closes[i]
+        high   = highs[i]
+        low    = lows[i]
+        vol    = volumes[i]
+        date_s = ts.strftime("%Y-%m-%d") if hasattr(ts, 'strftime') else str(ts)[:10]
+
+        # Dag reset
+        if date_s != last_dd_date:
+            day_dd         = 0.0
+            day_dd_disabled = False
+            last_dd_date   = date_s
+
+        # Delta % vs previous candle
+        delta = (close - closes[i-1]) / closes[i-1] * 100
+
+        # Volume ratio (20-period avg)
+        avg_vol   = sum(volumes[i-20:i]) / 20
+        vol_ratio = vol / avg_vol if avg_vol > 0 else 1.0
+
+        # Spread/slippage: niet te reconstrueren uit 1h OHLCV — guards gepasseerd in backtest
+        spread_bps = 0.0
+        slip_bps   = 0.0
+
+        mode = _recon_mode(i, delta)
+
+        # ── Monitor open posities ─────────────────────────────────────────────
+        for pos in list(open_positions):
+            # MAE/MFE update (worst/best price in this candle)
+            if high > pos["worst"]:
+                pos["worst"] = high
+            if low < pos["best"]:
+                pos["best"]  = low
+                new_trail     = round(low * (1 + trail_pct / 100), 8)
+                if new_trail < pos["trail"]:
+                    pos["trail"] = new_trail
+
+            exit_reason = None
+            exit_price  = close
+
+            if high >= pos["hard"]:
+                exit_reason = "hard_stop"
+                exit_price  = pos["hard"]
+            elif high >= pos["trail"]:
+                exit_reason = "trail_stop"
+                exit_price  = pos["trail"]
+            elif (i - pos["entry_i"]) >= time_stop_h:
+                exit_reason = "time_stop"
+            elif mode == "normal" and close > pos["entry_price"]:
+                exit_reason = "reversal"
+
+            if exit_reason:
+                entry   = pos["entry_price"]
+                pnl_pct = (entry - exit_price) / entry * 100
+                size    = risk_per_trade
+                pnl_usdt = size * pnl_pct / 100
+                equity  += pnl_usdt
+                if pnl_pct < 0:
+                    day_dd += abs(pnl_pct)
+                    if day_dd >= max_day_dd_pct:
+                        day_dd_disabled = True
+                mae = round((pos["worst"] - entry) / entry * 100, 3)
+                mfe = round((entry - pos["best"]) / entry * 100, 3)
+                trades.append({
+                    "entry_i":   pos["entry_i"],
+                    "exit_i":    i,
+                    "symbol":    sym,
+                    "regime":    pos["regime"],
+                    "entry":     round(entry, 6),
+                    "exit":      round(exit_price, 6),
+                    "pnl_pct":   round(pnl_pct, 3),
+                    "pnl_usdt":  round(pnl_usdt, 4),
+                    "exit_reason": exit_reason,
+                    "duration_h":  i - pos["entry_i"],
+                    "mae_pct":   mae,
+                    "mfe_pct":   mfe,
+                    "delta_trigger": round(pos["delta_trigger"], 3),
+                    "vol_trigger":   round(pos["vol_trigger"], 2),
+                })
+                open_positions.remove(pos)
+                equity_curve.append(round(equity, 2))
+                if equity > peak_equity:
+                    peak_equity = equity
+                dd = (peak_equity - equity) / peak_equity * 100
+                if dd > max_dd:
+                    max_dd = dd
+
+        # ── Entry guards (identiek aan live) ─────────────────────────────────
+        if mode == "normal":
+            rejects["mode"] += 1
+            continue
+        if day_dd_disabled:
+            rejects["day_dd"] += 1
+            continue
+        if delta > delta_thr:
+            rejects["delta"] += 1
+            continue
+        if vol_ratio < vol_ratio_thr:
+            rejects["volume"] += 1
+            continue
+        if len(open_positions) >= max_open:
+            rejects["max_open"] += 1
+            continue
+        last_e = last_entry_ts.get(sym, -9999)
+        if (i - last_e) < cooldown_h:
+            rejects["cooldown"] += 1
+            continue
+        if spread_bps > max_spread_bps:
+            rejects["spread"] += 1
+            continue
+        if slip_bps > max_slip_bps:
+            rejects["slippage"] += 1
+            continue
+
+        # Entry
+        trail = round(close * (1 + trail_pct / 100), 8)
+        hard  = round(close * (1 + hard_stop_pct / 100), 8)
+        open_positions.append({
+            "entry_price":  close,
+            "entry_i":      i,
+            "trail":        trail,
+            "hard":         hard,
+            "best":         close,
+            "worst":        close,
+            "regime":       get_regime(ts),
+            "delta_trigger":delta,
+            "vol_trigger":  vol_ratio,
+        })
+        last_entry_ts[sym] = i
+
+    # Force-close remaining at last price
+    for pos in open_positions:
+        entry   = pos["entry_price"]
+        exit_p  = closes[-1]
+        pnl_pct = (entry - exit_p) / entry * 100
+        mae = round((pos["worst"] - entry) / entry * 100, 3)
+        mfe = round((entry - pos["best"]) / entry * 100, 3)
+        trades.append({
+            "entry_i": pos["entry_i"], "exit_i": len(raw)-1,
+            "symbol": sym, "regime": pos["regime"],
+            "entry": round(entry, 6), "exit": round(exit_p, 6),
+            "pnl_pct": round(pnl_pct, 3),
+            "pnl_usdt": round(risk_per_trade * pnl_pct / 100, 4),
+            "exit_reason": "force_close", "duration_h": len(raw)-1 - pos["entry_i"],
+            "mae_pct": mae, "mfe_pct": mfe,
+            "delta_trigger": round(pos["delta_trigger"], 3),
+            "vol_trigger": round(pos["vol_trigger"], 2),
+        })
+
+    # ── KPI berekening ────────────────────────────────────────────────────────
+    def _kpis(trade_list: list) -> dict:
+        if not trade_list:
+            return {"n": 0}
+        wins  = [t for t in trade_list if t["pnl_pct"] > 0]
+        losses= [t for t in trade_list if t["pnl_pct"] <= 0]
+        gross_profit = sum(t["pnl_usdt"] for t in wins)
+        gross_loss   = abs(sum(t["pnl_usdt"] for t in losses))
+        pf = round(gross_profit / gross_loss, 3) if gross_loss > 0 else float("inf")
+        n  = len(trade_list)
+        avg_pnl   = round(sum(t["pnl_pct"] for t in trade_list) / n, 3)
+        avg_mae   = round(sum(t["mae_pct"] for t in trade_list) / n, 3)
+        avg_mfe   = round(sum(t["mfe_pct"] for t in trade_list) / n, 3)
+        avg_dur_h = round(sum(t["duration_h"] for t in trade_list) / n, 1)
+        exit_reasons = {}
+        for t in trade_list:
+            exit_reasons[t["exit_reason"]] = exit_reasons.get(t["exit_reason"], 0) + 1
+        return {
+            "n":               n,
+            "winrate_pct":     round(len(wins) / n * 100, 1),
+            "profit_factor":   pf,
+            "expectancy_pct":  avg_pnl,
+            "gross_profit_usdt": round(gross_profit, 2),
+            "gross_loss_usdt": round(gross_loss, 2),
+            "avg_mae_pct":     avg_mae,
+            "avg_mfe_pct":     avg_mfe,
+            "avg_duration_h":  avg_dur_h,
+            "exit_reasons":    exit_reasons,
+        }
+
+    overall   = _kpis(trades)
+    by_regime = {
+        r: _kpis([t for t in trades if t["regime"] == r])
+        for r in ("bull", "bear", "chop", "unknown")
+        if any(t["regime"] == r for t in trades)
+    }
+    total_rejects = sum(rejects.values())
+
+    return {
+        "symbol":          sym,
+        "days":            days,
+        "candles":         len(raw),
+        "config": {
+            "delta_thr":      delta_thr,
+            "vol_ratio_thr":  vol_ratio_thr,
+            "trail_pct":      trail_pct,
+            "hard_stop_pct":  hard_stop_pct,
+            "time_stop_h":    time_stop_h,
+            "cooldown_h":     cooldown_h,
+            "max_spread_bps": max_spread_bps,
+            "max_day_dd_pct": max_day_dd_pct,
+        },
+        "kpi":          overall,
+        "by_regime":    by_regime,
+        "max_drawdown_pct": round(max_dd, 2),
+        "final_equity_usdt":round(equity, 2),
+        "rejects":      rejects,
+        "reject_total": total_rejects,
+        "trades_sample": trades[-10:],   # laatste 10 trades als preview
+        "note": "Granulariteit: 1h candles. Time stop in uren. Mode proxy: panic als delta <= delta_thr. Spread/slippage geschat via candle-range.",
+    }
+
+
+def _run_sweep(job_id: str, symbol: str, days: int):
+    """Parameter sweep: test grid van delta × vol_ratio × trailing × cooldown."""
+    deltas      = [-1.0, -1.5, -2.0]
+    vol_ratios  = [1.4, 1.8, 2.2]
+    trail_vals  = [1.0, 1.5, 2.0]
+    cooldowns   = [1, 2, 3]   # uren (60/120/180 min → 1h/2h/3h in 1h data)
+
+    results = []
+    total   = len(deltas) * len(vol_ratios) * len(trail_vals) * len(cooldowns)
+    done    = 0
+
+    for d in deltas:
+        for v in vol_ratios:
+            for tr in trail_vals:
+                for cd in cooldowns:
+                    r = _simulate_short_backtest(
+                        symbol=symbol, days=days,
+                        delta_thr=d, vol_ratio_thr=v,
+                        trail_pct=tr, hard_stop_pct=1.2,
+                        time_stop_h=20, cooldown_h=cd,
+                        max_spread_bps=12, max_slip_bps=15,
+                        max_day_dd_pct=6.0, max_open=2,
+                    )
+                    if "error" not in r:
+                        kpi = r.get("kpi", {})
+                        results.append({
+                            "delta":    d, "vol_ratio": v,
+                            "trail":    tr, "cooldown_h": cd,
+                            "n":        kpi.get("n", 0),
+                            "pf":       kpi.get("profit_factor", 0),
+                            "winrate":  kpi.get("winrate_pct", 0),
+                            "expectancy":kpi.get("expectancy_pct", 0),
+                            "max_dd":   r.get("max_drawdown_pct", 99),
+                        })
+                    done += 1
+                    _replay_jobs[job_id]["progress"] = f"{done}/{total}"
+
+    # Top 5 op PF met DD constraint (max 15%)
+    valid  = [r for r in results if r["max_dd"] <= 15 and r["n"] >= 5]
+    top5   = sorted(valid, key=lambda x: x["pf"], reverse=True)[:5]
+    worst5 = sorted(valid, key=lambda x: x["pf"])[:5]
+
+    _replay_jobs[job_id].update({
+        "status":    "done",
+        "type":      "sweep",
+        "symbol":    symbol,
+        "days":      days,
+        "total_configs": total,
+        "valid_configs": len(valid),
+        "top5":      top5,
+        "worst5":    worst5,
+        "all":       sorted(results, key=lambda x: x["pf"], reverse=True),
+    })
+    log.info(f"[replay] Sweep klaar: {len(valid)}/{total} valid configs, top PF={top5[0]['pf'] if top5 else 'n/a'}")
+
+
+def _run_single(job_id: str, **kwargs):
+    try:
+        result = _simulate_short_backtest(**kwargs)
+        _replay_jobs[job_id].update({"status": "done", "type": "single", **result})
+    except Exception as e:
+        _replay_jobs[job_id].update({"status": "error", "error": str(e)})
+    log.info(f"[replay] Job {job_id} klaar")
+
+
+class ShortReplayRequest(BaseModel):
+    symbol:         str   = "BTCUSDT"
+    days:           int   = 90
+    sweep:          bool  = False
+    delta_thr:      float = -1.5
+    vol_ratio_thr:  float = 1.8
+    trail_pct:      float = 1.5
+    hard_stop_pct:  float = 1.2
+    time_stop_h:    int   = 20
+    cooldown_h:     float = 2.0
+    max_spread_bps: float = 12.0
+    max_day_dd_pct: float = 6.0
+    max_open:       int   = 2
+
+
+@app.post("/short/replay/run")
+def short_replay_run(req: ShortReplayRequest, background_tasks: BackgroundTasks):
+    """Start een backtest job (single run of parameter sweep). Geeft job_id terug."""
+    job_id = str(_uuid.uuid4())[:8]
+    _replay_jobs[job_id] = {"status": "running", "progress": "0/1"}
+
+    if req.sweep:
+        background_tasks.add_task(_run_sweep, job_id, req.symbol, req.days)
+    else:
+        background_tasks.add_task(_run_single, job_id,
+            symbol=req.symbol, days=req.days,
+            delta_thr=req.delta_thr, vol_ratio_thr=req.vol_ratio_thr,
+            trail_pct=req.trail_pct, hard_stop_pct=req.hard_stop_pct,
+            time_stop_h=req.time_stop_h, cooldown_h=req.cooldown_h,
+            max_spread_bps=req.max_spread_bps, max_slip_bps=15.0,
+            max_day_dd_pct=req.max_day_dd_pct, max_open=req.max_open)
+
+    return {"job_id": job_id, "status": "running",
+            "poll": f"GET /short/replay/result/{job_id}"}
+
+
+@app.get("/short/replay/result/{job_id}")
+def short_replay_result(job_id: str):
+    """Haal resultaat op van een replay job."""
+    job = _replay_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} niet gevonden")
+    return job
+
+
+@app.get("/short/replay/jobs")
+def short_replay_jobs():
+    """Overzicht van alle replay jobs."""
+    return {"jobs": {jid: {"status": j["status"],
+                            "type": j.get("type"),
+                            "progress": j.get("progress")}
+                     for jid, j in _replay_jobs.items()}}
