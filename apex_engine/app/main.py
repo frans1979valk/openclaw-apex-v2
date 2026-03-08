@@ -37,6 +37,20 @@ EXCHANGE_INTEL_ENABLED = os.getenv("EXCHANGE_INTEL_ENABLED", "true").lower() == 
 HALT_FILE = "/var/apex/trading_halt.json"
 STATE_PATH = "/var/apex/bot_state.json"
 RSI_BUY_THRESHOLD = float(os.getenv("RSI_BUY_THRESHOLD", "35"))  # default: geen koop boven RSI 35
+
+INDICATOR_ENGINE_URL = os.getenv("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
+
+
+def _get_system_mode() -> str:
+    """Vraag system mode op bij indicator_engine. Normal bij timeout."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            f"{INDICATOR_ENGINE_URL}/mode/current", timeout=2
+        ) as r:
+            return json.loads(r.read()).get("mode", "normal")
+    except Exception:
+        return "normal"
 INDICATOR_ENGINE_URL = os.getenv("INDICATOR_ENGINE_URL", "http://indicator_engine:8099")
 
 
@@ -488,7 +502,13 @@ def main():
             if _max_blocked:
                 print(f"[max-pos] {sym}: {_open_pos}/{_max_pos} open posities — geblokkeerd")
 
-            _buy_blocked = _btc_blocked or _blacklisted or _pattern_blocked or _chop_blocked or _max_blocked
+            # Panic/Crash mode — geen nieuwe buys
+            _sys_mode = _get_system_mode()
+            _mode_blocked = _sys_mode in ("panic", "crash")
+            if _mode_blocked:
+                print(f"[mode-block] {sym}: systeem in {_sys_mode}-mode — geen nieuwe buys")
+
+            _buy_blocked = _btc_blocked or _blacklisted or _pattern_blocked or _chop_blocked or _max_blocked or _mode_blocked
 
             if signal in ("PERFECT_DAY", "BREAKOUT_BULL", "MOMENTUM", "BUY") and price \
                and (now - last_signal_log.get(sig_key, 0)) > SIGNAL_LOG_COOLDOWN:
@@ -507,6 +527,7 @@ def main():
                         "pattern_blocked": _pattern_blocked,
                         "chop_blocked": _chop_blocked,
                         "max_blocked": _max_blocked,
+                        "mode_blocked": _mode_blocked,
                     }
                     log_trade_features(
                         demo_trade_id=_demo_id,

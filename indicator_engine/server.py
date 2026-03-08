@@ -1982,6 +1982,240 @@ def realtime_health():
         "symbols_tracking":  len(_live_buffers),
     }
 
+# ── Alert Bot + Panic-Mode + Mode Orchestrator ───────────────────────────────
+
+# Config
+SPIKE_THRESHOLD_PCT  = float(os.getenv("SPIKE_THRESHOLD_PCT",  "0.8"))
+SPIKE_MAJOR_PCT      = float(os.getenv("SPIKE_MAJOR_PCT",      "1.5"))
+SPIKE_EXTREME_PCT    = float(os.getenv("SPIKE_EXTREME_PCT",    "3.0"))
+VOLUME_SURGE_RATIO   = float(os.getenv("VOLUME_SURGE_RATIO",   "1.8"))
+ALERT_COOLDOWN_SEC   = int(os.getenv("ALERT_COOLDOWN_SEC",     "300"))
+PANIC_DURATION_SEC   = int(os.getenv("PANIC_DURATION_SEC",     "90"))
+
+# Alert store (in-memory ring + DB persist)
+_alerts: deque        = deque(maxlen=500)
+_alert_lock           = threading.Lock()
+_alert_cooldown: dict = {}   # symbol → last alert epoch
+
+# Mode state machine
+_mode: dict = {
+    "mode":        "normal",  # normal | panic | crash
+    "since":       None,
+    "reason":      None,
+    "armed_short": False,
+    "short_entry": None,      # hypothetische short entry prijs
+    "short_trail": None,      # trailing stop prijs
+}
+_mode_lock          = threading.Lock()
+_mode_log: deque    = deque(maxlen=200)
+_panic_confirm: int = 0
+
+
+def _add_alert(symbol: str, kind: str, severity: str, msg: str,
+               price: float, delta_pct: float, vol_ratio: float) -> dict:
+    now  = time.time()
+    last = _alert_cooldown.get(symbol, 0)
+    if now - last < ALERT_COOLDOWN_SEC and severity != "extreme":
+        return {}
+    alert = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol, "kind": kind, "severity": severity,
+        "message": msg, "price": price,
+        "delta_pct": round(delta_pct, 3), "vol_ratio": round(vol_ratio, 2),
+    }
+    with _alert_lock:
+        _alerts.appendleft(alert)
+        _alert_cooldown[symbol] = now
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            INSERT INTO alerts (symbol, kind, severity, message, price, delta_pct, vol_ratio)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """), (symbol, kind, severity, msg, price, round(delta_pct, 3), round(vol_ratio, 2)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"[alert-db] {e}")
+    log.info(f"[alert] {severity.upper()} {symbol} {kind}: {msg}")
+    return alert
+
+
+def _set_mode(new_mode: str, reason: str):
+    global _panic_confirm
+    with _mode_lock:
+        old = _mode["mode"]
+        if old == new_mode:
+            return
+        _mode.update({"mode": new_mode, "since": datetime.now(timezone.utc).isoformat(),
+                      "reason": reason})
+        if new_mode == "panic":
+            _mode["armed_short"] = True
+        elif new_mode == "normal":
+            _mode.update({"armed_short": False, "short_entry": None, "short_trail": None})
+        _panic_confirm = 0
+    _mode_log.appendleft({"ts": _mode["since"], "from": old, "to": new_mode, "reason": reason})
+    log.info(f"[mode] {old} → {new_mode}: {reason}")
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("INSERT INTO mode_log (mode_from, mode_to, reason) VALUES (?,?,?)"),
+                    (old, new_mode, reason))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"[mode-db] {e}")
+    _add_alert("SYSTEM", "mode_switch", "extreme" if new_mode == "crash" else "major",
+               f"Mode: {old} → {new_mode} — {reason}", 0, 0, 0)
+
+
+def _check_short_entry(sym: str, price: float, delta_pct: float, vol_ratio: float):
+    if not _mode["armed_short"] or _mode["short_entry"] is not None:
+        return
+    if delta_pct < -SPIKE_MAJOR_PCT and vol_ratio > VOLUME_SURGE_RATIO:
+        trail = round(price * 1.015, 6)
+        with _mode_lock:
+            _mode["short_entry"] = price
+            _mode["short_trail"] = trail
+        _add_alert(sym, "short_signal", "major",
+                   f"Short armed @ {price} | trail={trail} | Δ={delta_pct:.2f}%",
+                   price, delta_pct, vol_ratio)
+
+
+def _check_short_exit(sym: str, price: float):
+    entry = _mode.get("short_entry")
+    trail = _mode.get("short_trail")
+    if not entry or not trail:
+        return
+    new_trail = price * 1.015
+    if new_trail < trail:
+        with _mode_lock:
+            _mode["short_trail"] = new_trail
+        return
+    pnl = round((entry - price) / entry * 100, 3)
+    _add_alert(sym, "short_signal", "major",
+               f"Short EXIT @ {price} (trailing stop) | PnL={pnl:+.2f}%", price, pnl, 0)
+    with _mode_lock:
+        _mode["short_entry"] = None
+        _mode["short_trail"] = None
+    log.info(f"[short] Exit signal {sym} @ {price}, PnL={pnl:+.2f}%")
+
+
+def _spike_monitor_loop():
+    global _panic_confirm
+    while True:
+        time.sleep(5)
+        try:
+            with _live_buf_lock:
+                snap = {sym: (list(buf)[-1], list(buf)[-2], list(buf)[-20:])
+                        for sym, buf in _live_buffers.items() if len(buf) >= 3}
+        except Exception:
+            continue
+
+        for sym, (latest, prev, last20) in snap.items():
+            price      = latest["close"]
+            prev_price = prev["close"]
+            if prev_price <= 0:
+                continue
+            delta_pct = (price - prev_price) / prev_price * 100
+            vol       = latest["volume"]
+            avg_vol   = sum(c["volume"] for c in last20) / len(last20) if last20 else vol
+            vol_ratio = round(vol / avg_vol, 2) if avg_vol > 0 else 1.0
+
+            abs_d = abs(delta_pct)
+            if abs_d < SPIKE_THRESHOLD_PCT:
+                continue
+            if abs_d >= SPIKE_EXTREME_PCT:
+                severity = "extreme"
+            elif abs_d >= SPIKE_MAJOR_PCT:
+                severity = "major"
+            else:
+                severity = "minor"
+
+            if severity == "minor" and vol_ratio < 1.5:
+                continue
+
+            kind = "spike" if delta_pct > 0 else "drop"
+            _add_alert(sym, kind, severity,
+                       f"{sym} {kind.upper()} {delta_pct:+.2f}%/60s @ {price} (vol {vol_ratio:.1f}x)",
+                       price, delta_pct, vol_ratio)
+
+            # Panic escalatie (extreme drops)
+            if severity == "extreme" and delta_pct < 0:
+                _panic_confirm += 1
+                mode_now = _mode["mode"]
+                if mode_now == "normal" and _panic_confirm >= 2:
+                    _set_mode("panic", f"{sym} extreme drop {delta_pct:.2f}%")
+                elif mode_now == "panic":
+                    _set_mode("crash", f"{sym} extreme drop — escalatie")
+            elif delta_pct > 0:
+                _panic_confirm = max(0, _panic_confirm - 1)
+
+            if _mode["mode"] in ("panic", "crash"):
+                _check_short_entry(sym, price, delta_pct, vol_ratio)
+                _check_short_exit(sym, price)
+
+        # Mode recovery check
+        mode_now   = _mode["mode"]
+        mode_since = _mode.get("since")
+        if mode_now in ("panic", "crash") and mode_since:
+            try:
+                elapsed = (datetime.now(timezone.utc) -
+                           datetime.fromisoformat(mode_since)).total_seconds()
+                if elapsed > PANIC_DURATION_SEC and mode_now == "panic":
+                    _set_mode("normal", f"Geen extreme events na {int(elapsed)}s")
+                elif elapsed > PANIC_DURATION_SEC * 2 and mode_now == "crash":
+                    _set_mode("normal", f"Crash voorbij na {int(elapsed)}s")
+            except Exception:
+                pass
+
+
+# Patch _start_ws_feed om spike monitor mee te starten
+_orig_start_ws_feed = _start_ws_feed
+
+
+def _start_ws_feed():
+    _orig_start_ws_feed()
+    threading.Thread(target=_spike_monitor_loop, daemon=True, name="spike-monitor").start()
+    log.info("[alert-bot] Spike monitor gestart")
+
+
+# ── Alert + Mode endpoints ────────────────────────────────────────────────────
+
+@app.get("/alerts/high-impact")
+def alerts_high_impact(since: str = None, severity: str = None, limit: int = 50):
+    """Kant-en-klare alert events: spikes, drops, short signals, mode switches."""
+    with _alert_lock:
+        items = list(_alerts)
+    if severity:
+        items = [a for a in items if a["severity"] == severity]
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            items = [a for a in items if datetime.fromisoformat(a["ts"]) >= since_dt]
+        except Exception:
+            pass
+    return {"alerts": items[:limit], "total": len(items)}
+
+
+@app.get("/mode/current")
+def mode_current():
+    """Huidig systeem-mode: normal | panic | crash. Apex_engine gebruikt dit voor no-new-buys."""
+    return {
+        "mode":        _mode["mode"],
+        "since":       _mode["since"],
+        "reason":      _mode["reason"],
+        "armed_short": _mode["armed_short"],
+        "short_entry": _mode["short_entry"],
+        "short_trail": _mode["short_trail"],
+    }
+
+
+@app.get("/mode/log")
+def mode_log_endpoint(limit: int = 50):
+    """Geschiedenis van mode switches met reden en tijdstip."""
+    return {"log": list(_mode_log)[:limit]}
+
 
 # ── Fase 2: Level Replay ──────────────────────────────────────────────────────
 

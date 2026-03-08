@@ -314,6 +314,30 @@ CREATE INDEX IF NOT EXISTS idx_testbot_status ON testbot_trades(status);
 CREATE INDEX IF NOT EXISTS idx_testbot_symbol ON testbot_trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_testbot_ts     ON testbot_trades(entry_ts);
 
+CREATE TABLE IF NOT EXISTS alerts (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol      TEXT NOT NULL,
+    kind        TEXT NOT NULL,     -- spike | drop | short_signal | mode_switch
+    severity    TEXT NOT NULL,     -- minor | major | extreme
+    message     TEXT,
+    price       REAL,
+    delta_pct   REAL,
+    vol_ratio   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts       ON alerts(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_symbol   ON alerts(symbol);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+
+CREATE TABLE IF NOT EXISTS mode_log (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mode_from   TEXT NOT NULL,
+    mode_to     TEXT NOT NULL,
+    reason      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mode_log_ts ON mode_log(ts DESC);
+
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
