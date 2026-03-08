@@ -240,7 +240,7 @@ const EXPIRES = localStorage.getItem('cc_expires');
 if (!TOKEN || !EXPIRES || new Date(EXPIRES) < new Date()) {
   localStorage.removeItem('cc_token');
   localStorage.removeItem('cc_expires');
-  window.location.href = '/';
+  window.location.href = '/cc_login';
 }
 
 function headers() { return { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' }; }
@@ -441,7 +441,7 @@ function logout() {
   api('POST', '/cc/auth/logout');
   localStorage.removeItem('cc_token');
   localStorage.removeItem('cc_expires');
-  window.location.href = '/';
+  window.location.href = '/cc_login';
 }
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
