@@ -314,6 +314,40 @@ CREATE INDEX IF NOT EXISTS idx_testbot_status ON testbot_trades(status);
 CREATE INDEX IF NOT EXISTS idx_testbot_symbol ON testbot_trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_testbot_ts     ON testbot_trades(entry_ts);
 
+CREATE TABLE IF NOT EXISTS short_positions (
+    id                  SERIAL PRIMARY KEY,
+    ts_entry            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ts_exit             TIMESTAMPTZ,
+    symbol              TEXT NOT NULL,
+    entry_price         REAL NOT NULL,
+    exit_price          REAL,
+    size_usdt           REAL NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'open',
+    exit_reason         TEXT,
+    pnl_pct             REAL,
+    duration_s          INTEGER,
+    mae_pct             REAL,
+    mfe_pct             REAL,
+    trigger_delta       REAL,
+    trigger_vol_ratio   REAL,
+    trigger_spread_bps  REAL,
+    trigger_mode        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_short_pos_status ON short_positions(status);
+CREATE INDEX IF NOT EXISTS idx_short_pos_ts     ON short_positions(ts_entry DESC);
+
+CREATE TABLE IF NOT EXISTS short_log (
+    id      SERIAL PRIMARY KEY,
+    ts      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol  TEXT NOT NULL,
+    action  TEXT NOT NULL,
+    reason  TEXT,
+    price   REAL,
+    pnl_pct REAL,
+    details TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_short_log_ts ON short_log(ts DESC);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id          SERIAL PRIMARY KEY,
     ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),

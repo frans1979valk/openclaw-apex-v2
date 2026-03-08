@@ -1992,6 +1992,279 @@ VOLUME_SURGE_RATIO   = float(os.getenv("VOLUME_SURGE_RATIO",   "1.8"))
 ALERT_COOLDOWN_SEC   = int(os.getenv("ALERT_COOLDOWN_SEC",     "300"))
 PANIC_DURATION_SEC   = int(os.getenv("PANIC_DURATION_SEC",     "90"))
 
+# ── Short Execution Engine — config ──────────────────────────────────────────
+
+SHORT_POT_USDT        = float(os.getenv("SHORT_POT_USDT",        "1000"))
+SHORT_RISK_PCT        = float(os.getenv("SHORT_RISK_PCT",        "1.5"))
+SHORT_MAX_POSITIONS   = int(os.getenv("SHORT_MAX_POSITIONS",     "2"))
+SHORT_MAX_DAY_DD_PCT  = float(os.getenv("SHORT_MAX_DAY_DD_PCT",  "6.0"))
+SHORT_TRAIL_PCT       = float(os.getenv("SHORT_TRAIL_PCT",       "1.5"))
+SHORT_HARD_STOP_PCT   = float(os.getenv("SHORT_HARD_STOP_PCT",   "1.2"))
+SHORT_TIME_STOP_MIN   = int(os.getenv("SHORT_TIME_STOP_MIN",     "20"))
+SHORT_COOLDOWN_SEC    = int(os.getenv("SHORT_COOLDOWN_SEC",      "120"))
+SHORT_RE_ENTRY_SEC    = int(os.getenv("SHORT_RE_ENTRY_SEC",      "30"))
+SHORT_MAX_SPREAD_BPS  = float(os.getenv("SHORT_MAX_SPREAD_BPS",  "12"))
+SHORT_MAX_SLIP_BPS    = float(os.getenv("SHORT_MAX_SLIP_BPS",    "15"))
+SHORT_MIN_DELTA_PCT   = float(os.getenv("SHORT_MIN_DELTA_PCT",   "-1.5"))
+
+_short_state: dict = {
+    "armed":            False,
+    "enabled":          True,
+    "block_reason":     None,
+    "open_positions":   [],       # list of live position dicts
+    "day_dd_pct":       0.0,
+    "day_losses_usdt":  0.0,
+    "day_date":         None,     # UTC date YYYY-MM-DD
+    "last_entry_ts":    {},       # symbol → epoch
+}
+_short_lock           = threading.Lock()
+_short_log_buf: deque = deque(maxlen=1000)
+
+
+def _short_log(symbol: str, action: str, reason: str,
+               price: float = 0.0, pnl_pct: float = None, details: dict = None):
+    entry = {
+        "ts":      datetime.now(timezone.utc).isoformat(),
+        "symbol":  symbol, "action": action,
+        "reason":  reason, "price":  price,
+        "pnl_pct": round(pnl_pct, 3) if pnl_pct is not None else None,
+        "details": details or {},
+    }
+    _short_log_buf.appendleft(entry)
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            INSERT INTO short_log (symbol, action, reason, price, pnl_pct, details)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """), (symbol, action, reason, price,
+               round(pnl_pct, 3) if pnl_pct is not None else None,
+               json.dumps(details or {})))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"[short-log-db] {e}")
+
+
+def _short_day_reset():
+    """Reset dag-DD teller bij nieuwe UTC dag."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _short_state["day_date"] != today:
+        with _short_lock:
+            _short_state["day_date"]        = today
+            _short_state["day_dd_pct"]      = 0.0
+            _short_state["day_losses_usdt"] = 0.0
+            if not _short_state["enabled"] and "dag DD" in (_short_state["block_reason"] or ""):
+                _short_state["enabled"]     = True
+                _short_state["block_reason"] = None
+        log.info(f"[short] Dag reset — short weer enabled")
+
+
+def _estimate_market_quality(sym: str) -> tuple[float, float]:
+    """Schat spread_bps en slippage_bps uit WS candle data."""
+    with _live_buf_lock:
+        buf = _live_buffers.get(sym)
+        candles = list(buf)[-3:] if buf and len(buf) >= 3 else []
+    if not candles:
+        return 999.0, 999.0
+    last  = candles[-1]
+    close = last["close"]
+    if close <= 0:
+        return 999.0, 999.0
+    # Spread proxy: half of candle range as fraction of price (in bps)
+    spread_bps   = (last["high"] - last["low"]) / close * 10000 / 2
+    # Slippage proxy: avg body size of last 3 candles (volatility estimate)
+    bodies = [abs(c["close"] - c["open"]) / c["close"] * 10000 for c in candles if c["close"] > 0]
+    slip_bps = sum(bodies) / len(bodies) if bodies else 999.0
+    return round(spread_bps, 2), round(slip_bps, 2)
+
+
+def _short_open(sym: str, price: float, delta_pct: float, vol_ratio: float) -> bool:
+    """Probeer een demo short te openen. Controleert alle entry-guards."""
+    _short_day_reset()
+
+    # Guard 1: mode
+    if _mode["mode"] not in ("panic", "crash"):
+        _short_log(sym, "reject", "mode niet panic/crash", price,
+                   details={"mode": _mode["mode"]})
+        return False
+
+    # Guard 2: enabled + dag DD
+    if not _short_state["enabled"]:
+        _short_log(sym, "reject", _short_state["block_reason"] or "short disabled", price)
+        return False
+
+    # Guard 3: delta
+    if delta_pct > SHORT_MIN_DELTA_PCT:
+        _short_log(sym, "reject", f"delta {delta_pct:.2f}% > threshold {SHORT_MIN_DELTA_PCT}%",
+                   price, details={"delta_pct": delta_pct})
+        return False
+
+    # Guard 4: volume surge
+    if vol_ratio < VOLUME_SURGE_RATIO:
+        _short_log(sym, "reject", f"vol_ratio {vol_ratio:.1f} < {VOLUME_SURGE_RATIO}",
+                   price, details={"vol_ratio": vol_ratio})
+        return False
+
+    # Guard 5: max open positions
+    if len(_short_state["open_positions"]) >= SHORT_MAX_POSITIONS:
+        _short_log(sym, "reject", f"max posities ({SHORT_MAX_POSITIONS}) bereikt", price)
+        return False
+
+    # Guard 6: symbol cooldown
+    now     = time.time()
+    last_ts = _short_state["last_entry_ts"].get(sym, 0)
+    elapsed = now - last_ts
+    if elapsed < SHORT_COOLDOWN_SEC:
+        _short_log(sym, "reject",
+                   f"cooldown actief ({int(SHORT_COOLDOWN_SEC - elapsed)}s resterend)", price,
+                   details={"cooldown_remaining_s": int(SHORT_COOLDOWN_SEC - elapsed)})
+        return False
+
+    # Guard 7: spread + slippage
+    spread_bps, slip_bps = _estimate_market_quality(sym)
+    if spread_bps > SHORT_MAX_SPREAD_BPS:
+        _short_log(sym, "reject", f"spread {spread_bps:.1f}bps > {SHORT_MAX_SPREAD_BPS}bps",
+                   price, details={"spread_bps": spread_bps})
+        return False
+    if slip_bps > SHORT_MAX_SLIP_BPS:
+        _short_log(sym, "reject", f"slippage {slip_bps:.1f}bps > {SHORT_MAX_SLIP_BPS}bps",
+                   price, details={"slip_bps": slip_bps})
+        return False
+
+    # Alle guards OK — open positie
+    size_usdt    = SHORT_POT_USDT * (SHORT_RISK_PCT / 100)
+    trail_stop   = round(price * (1 + SHORT_TRAIL_PCT / 100), 8)
+    hard_stop    = round(price * (1 + SHORT_HARD_STOP_PCT / 100), 8)
+    time_stop_ts = now + SHORT_TIME_STOP_MIN * 60
+
+    # DB insert
+    db_id = None
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            INSERT INTO short_positions
+            (symbol, entry_price, size_usdt, status,
+             trigger_delta, trigger_vol_ratio, trigger_spread_bps, trigger_mode)
+            VALUES (?, ?, ?, 'open', ?, ?, ?, ?)
+        """), (sym, price, size_usdt, round(delta_pct, 3),
+               round(vol_ratio, 2), round(spread_bps, 2), _mode["mode"]))
+        conn.commit()
+        cur.execute("SELECT lastval()")
+        db_id = cur.fetchone()[0]
+        conn.close()
+    except Exception as e:
+        log.warning(f"[short-db] Insert fout: {e}")
+
+    position = {
+        "db_id":       db_id,
+        "symbol":      sym,
+        "entry_price": price,
+        "entry_ts":    now,
+        "size_usdt":   size_usdt,
+        "trail_stop":  trail_stop,
+        "hard_stop":   hard_stop,
+        "time_stop_ts":time_stop_ts,
+        "best_price":  price,   # laagst gezien (MFE voor short)
+        "worst_price": price,   # hoogst gezien (MAE voor short)
+    }
+    with _short_lock:
+        _short_state["open_positions"].append(position)
+        _short_state["last_entry_ts"][sym] = now
+
+    _short_log(sym, "entry", f"Short geopend @ {price}", price,
+               details={"size_usdt": size_usdt, "trail_stop": trail_stop,
+                        "hard_stop": hard_stop, "spread_bps": spread_bps,
+                        "delta_pct": delta_pct, "vol_ratio": vol_ratio})
+    _add_alert(sym, "short_signal", "major",
+               f"Short OPEN @ {price} | size={size_usdt:.2f}USDT | trail={trail_stop}",
+               price, delta_pct, vol_ratio)
+    log.info(f"[short] Positie geopend {sym} @ {price}, size={size_usdt:.2f}USDT")
+    return True
+
+
+def _short_close(position: dict, price: float, reason: str):
+    """Sluit een open short positie."""
+    entry      = position["entry_price"]
+    pnl_pct    = round((entry - price) / entry * 100, 3)
+    duration_s = int(time.time() - position["entry_ts"])
+    mae_pct    = round((position["worst_price"] - entry) / entry * 100, 3)
+    mfe_pct    = round((entry - position["best_price"]) / entry * 100, 3)
+    size_usdt  = position["size_usdt"]
+    pnl_usdt   = round(size_usdt * pnl_pct / 100, 4)
+
+    with _short_lock:
+        if position in _short_state["open_positions"]:
+            _short_state["open_positions"].remove(position)
+        if pnl_pct < 0:
+            _short_state["day_dd_pct"]      += abs(pnl_pct)
+            _short_state["day_losses_usdt"] += abs(pnl_usdt)
+            if _short_state["day_dd_pct"] >= SHORT_MAX_DAY_DD_PCT:
+                _short_state["enabled"]     = False
+                _short_state["block_reason"] = f"Dag DD {_short_state['day_dd_pct']:.1f}% >= {SHORT_MAX_DAY_DD_PCT}%"
+                log.warning(f"[short] Dag DD limiet bereikt — short disabled tot UTC reset")
+
+    # DB update
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            UPDATE short_positions
+            SET ts_exit=NOW(), exit_price=?, status='closed', exit_reason=?,
+                pnl_pct=?, duration_s=?, mae_pct=?, mfe_pct=?
+            WHERE id=?
+        """), (price, reason, pnl_pct, duration_s, mae_pct, mfe_pct, position["db_id"]))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"[short-db] Update fout: {e}")
+
+    _short_log(position["symbol"], "exit", reason, price, pnl_pct,
+               details={"entry": entry, "duration_s": duration_s,
+                        "mae_pct": mae_pct, "mfe_pct": mfe_pct, "pnl_usdt": pnl_usdt})
+    _add_alert(position["symbol"], "short_signal",
+               "major" if pnl_pct >= 0 else "minor",
+               f"Short CLOSE @ {price} ({reason}) | PnL={pnl_pct:+.2f}% ({pnl_usdt:+.4f}USDT)",
+               price, pnl_pct, 0)
+    log.info(f"[short] Positie gesloten {position['symbol']} @ {price} | {reason} | PnL={pnl_pct:+.2f}%")
+
+
+def _short_monitor_positions(current_prices: dict):
+    """Controleer alle open shorts op exit condities."""
+    now = time.time()
+    for pos in list(_short_state["open_positions"]):
+        sym   = pos["symbol"]
+        price = current_prices.get(sym)
+        if price is None:
+            continue
+
+        # MAE/MFE bijhouden
+        if price > pos["worst_price"]:
+            pos["worst_price"] = price
+        if price < pos["best_price"]:
+            pos["best_price"] = price
+            # Trailing stop verlagen bij nieuwe low
+            new_trail = round(price * (1 + SHORT_TRAIL_PCT / 100), 8)
+            if new_trail < pos["trail_stop"]:
+                pos["trail_stop"] = new_trail
+
+        # Exit checks
+        if price >= pos["hard_stop"]:
+            _short_close(pos, price, f"Hard stoploss (price {price} >= {pos['hard_stop']})")
+            continue
+        if price >= pos["trail_stop"]:
+            _short_close(pos, price, f"Trailing stop (price {price} >= {pos['trail_stop']})")
+            continue
+        if now >= pos["time_stop_ts"]:
+            _short_close(pos, price, f"Time stop ({SHORT_TIME_STOP_MIN}min verlopen)")
+            continue
+        # Reversal exit: mode terug normal + momentum positief
+        if _mode["mode"] == "normal":
+            _short_close(pos, price, "Reversal exit (mode=normal)")
+            continue
+
+
 # Alert store (in-memory ring + DB persist)
 _alerts: deque        = deque(maxlen=500)
 _alert_lock           = threading.Lock()
@@ -2054,6 +2327,12 @@ def _set_mode(new_mode: str, reason: str):
         elif new_mode == "normal":
             _mode.update({"armed_short": False, "short_entry": None, "short_trail": None})
         _panic_confirm = 0
+    # Sync short_state armed flag
+    with _short_lock:
+        _short_state["armed"] = (new_mode in ("panic", "crash"))
+        if new_mode == "normal":
+            _short_state["armed"] = False
+
     _mode_log.appendleft({"ts": _mode["since"], "from": old, "to": new_mode, "reason": reason})
     log.info(f"[mode] {old} → {new_mode}: {reason}")
     try:
@@ -2151,9 +2430,18 @@ def _spike_monitor_loop():
             elif delta_pct > 0:
                 _panic_confirm = max(0, _panic_confirm - 1)
 
-            if _mode["mode"] in ("panic", "crash"):
-                _check_short_entry(sym, price, delta_pct, vol_ratio)
-                _check_short_exit(sym, price)
+            # Short execution: in panic/crash + short_signal condities
+            if _mode["mode"] in ("panic", "crash") and _short_state["armed"]:
+                _short_open(sym, price, delta_pct, vol_ratio)
+
+        # Monitor open short positions
+        current_prices = {}
+        with _live_buf_lock:
+            for sym, buf in _live_buffers.items():
+                if buf:
+                    current_prices[sym] = list(buf)[-1]["close"]
+        _short_monitor_positions(current_prices)
+        _short_day_reset()
 
         # Mode recovery check
         mode_now   = _mode["mode"]
@@ -2202,13 +2490,77 @@ def alerts_high_impact(since: str = None, severity: str = None, limit: int = 50)
 def mode_current():
     """Huidig systeem-mode: normal | panic | crash. Apex_engine gebruikt dit voor no-new-buys."""
     return {
-        "mode":        _mode["mode"],
-        "since":       _mode["since"],
-        "reason":      _mode["reason"],
-        "armed_short": _mode["armed_short"],
-        "short_entry": _mode["short_entry"],
-        "short_trail": _mode["short_trail"],
+        "mode":              _mode["mode"],
+        "since":             _mode["since"],
+        "reason":            _mode["reason"],
+        "armed_short":       _short_state["armed"],
+        "short_enabled":     _short_state["enabled"],
+        "short_block_reason":_short_state["block_reason"],
+        "open_shorts":       len(_short_state["open_positions"]),
     }
+
+
+@app.get("/short/status")
+def short_status():
+    """Short bot status: armed, enabled, open posities, dag DD, cooldowns."""
+    now = time.time()
+    cooldowns = {
+        sym: round(max(0, SHORT_COOLDOWN_SEC - (now - ts)), 0)
+        for sym, ts in _short_state["last_entry_ts"].items()
+        if now - ts < SHORT_COOLDOWN_SEC
+    }
+    open_pos = []
+    for p in _short_state["open_positions"]:
+        entry   = p["entry_price"]
+        # Get latest price from WS buffer
+        with _live_buf_lock:
+            buf = _live_buffers.get(p["symbol"])
+            cur_price = list(buf)[-1]["close"] if buf else entry
+        pnl_pct = round((entry - cur_price) / entry * 100, 3)
+        open_pos.append({
+            "symbol":       p["symbol"],
+            "entry_price":  entry,
+            "current_price":cur_price,
+            "pnl_pct":      pnl_pct,
+            "trail_stop":   p["trail_stop"],
+            "hard_stop":    p["hard_stop"],
+            "size_usdt":    p["size_usdt"],
+            "time_stop_in_s":max(0, int(p["time_stop_ts"] - now)),
+        })
+    return {
+        "armed":           _short_state["armed"],
+        "enabled":         _short_state["enabled"],
+        "block_reason":    _short_state["block_reason"],
+        "open_positions":  open_pos,
+        "open_count":      len(open_pos),
+        "day_dd_pct":      round(_short_state["day_dd_pct"], 2),
+        "day_losses_usdt": round(_short_state["day_losses_usdt"], 4),
+        "day_dd_limit":    SHORT_MAX_DAY_DD_PCT,
+        "last_entry":      _short_state["last_entry_ts"],
+        "cooldowns_remaining": cooldowns,
+        "config": {
+            "pot_usdt":       SHORT_POT_USDT,
+            "risk_pct":       SHORT_RISK_PCT,
+            "max_positions":  SHORT_MAX_POSITIONS,
+            "trail_pct":      SHORT_TRAIL_PCT,
+            "hard_stop_pct":  SHORT_HARD_STOP_PCT,
+            "time_stop_min":  SHORT_TIME_STOP_MIN,
+            "cooldown_sec":   SHORT_COOLDOWN_SEC,
+        },
+    }
+
+
+@app.get("/short/log")
+def short_log_endpoint(since: str = None, limit: int = 100):
+    """Log van alle short acties: entry, exit, reject."""
+    items = list(_short_log_buf)
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            items = [e for e in items if datetime.fromisoformat(e["ts"]) >= since_dt]
+        except Exception:
+            pass
+    return {"log": items[:limit], "total": len(items)}
 
 
 @app.get("/mode/log")
