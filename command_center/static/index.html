@@ -623,33 +623,38 @@ async function loadReplayResult(jobId) {
     if (!r) return;
     const d = await r.json();
     if (d.status !== 'done') {
-      document.getElementById('replayResult').innerHTML = `<span class="empty">Status: ${d.status}</span>`;
+      document.getElementById('replayResult').innerHTML = `<span class="empty">Status: ${escHtml(d.status||'?')} — nog niet klaar</span>`;
+      if (d.status === 'running' || d.status === 'pending') _startReplayPoll(jobId);
       return;
     }
-    const res = d.result || {};
-    let html = '<div style="font-size:0.85em;margin-top:6px">';
-    if (res.sweep) {
-      const top5 = res.top5 || [];
-      html += '<strong>Top 5 configs (sweep):</strong><table style="margin-top:6px"><tr><th>delta</th><th>vol</th><th>trail</th><th>PF</th><th>WR%</th><th>trades</th><th>max_dd</th></tr>';
-      top5.forEach(c => {
-        html += `<tr><td>${c.delta_thr}</td><td>${c.vol_ratio_thr}</td><td>${c.trail_pct}</td>
-          <td style="color:#3fb950">${parseFloat(c.profit_factor||0).toFixed(2)}</td>
-          <td>${parseFloat(c.win_rate||0).toFixed(1)}%</td>
-          <td>${c.total_trades||0}</td>
-          <td style="color:#f85149">${fmtPct(c.max_dd_pct)}</td></tr>`;
-      });
-      html += '</table>';
-    } else {
-      const kpi = res.kpi || res;
-      html += `<div class="kv"><span class="k">Profit Factor</span><span class="v">${parseFloat(kpi.profit_factor||0).toFixed(2)}</span></div>`;
-      html += `<div class="kv"><span class="k">Win Rate</span><span class="v">${parseFloat(kpi.win_rate||0).toFixed(1)}%</span></div>`;
-      html += `<div class="kv"><span class="k">Trades</span><span class="v">${kpi.total_trades||0}</span></div>`;
-      html += `<div class="kv"><span class="k">Expectancy</span><span class="v">${parseFloat(kpi.expectancy||0).toFixed(3)}%</span></div>`;
-      html += `<div class="kv"><span class="k">Max DD</span><span class="v" style="color:#f85149">${fmtPct(kpi.max_dd_pct)}</span></div>`;
-    }
-    html += '</div>';
-    document.getElementById('replayResult').innerHTML = html;
+    _renderReplayResult(d);
   } catch(e) { document.getElementById('replayResult').innerHTML = '<span class="empty">Fout bij laden</span>'; }
+}
+
+function _renderReplayResult(d) {
+  const res = d.result || d;
+  let html = '<div style="font-size:0.85em;margin-top:6px">';
+  if (res.sweep) {
+    const top5 = res.top5 || [];
+    html += '<strong>Top 5 configs (sweep):</strong><table style="margin-top:6px"><tr><th>delta</th><th>vol</th><th>trail</th><th>PF</th><th>WR%</th><th>trades</th><th>max_dd</th></tr>';
+    top5.forEach(c => {
+      html += `<tr><td>${c.delta_thr}</td><td>${c.vol_ratio_thr}</td><td>${c.trail_pct}</td>
+        <td style="color:#3fb950">${parseFloat(c.profit_factor||0).toFixed(2)}</td>
+        <td>${parseFloat(c.win_rate||0).toFixed(1)}%</td>
+        <td>${c.total_trades||0}</td>
+        <td style="color:#f85149">${fmtPct(c.max_dd_pct)}</td></tr>`;
+    });
+    html += '</table>';
+  } else {
+    const kpi = res.kpi || res;
+    html += `<div class="kv"><span class="k">Profit Factor</span><span class="v">${parseFloat(kpi.profit_factor||0).toFixed(2)}</span></div>`;
+    html += `<div class="kv"><span class="k">Win Rate</span><span class="v">${parseFloat(kpi.win_rate||0).toFixed(1)}%</span></div>`;
+    html += `<div class="kv"><span class="k">Trades</span><span class="v">${kpi.total_trades||0}</span></div>`;
+    html += `<div class="kv"><span class="k">Expectancy</span><span class="v">${parseFloat(kpi.expectancy||0).toFixed(3)}%</span></div>`;
+    html += `<div class="kv"><span class="k">Max DD</span><span class="v" style="color:#f85149">${fmtPct(kpi.max_dd_pct)}</span></div>`;
+  }
+  html += '</div>';
+  document.getElementById('replayResult').innerHTML = html;
 }
 
 // ── Confirm helpers ──
@@ -690,9 +695,12 @@ async function doShortDisable() {
   if (r && r.ok) setTimeout(loadModeStatus, 1000);
 }
 
+let _replayPollTimer = null;
+
 async function doReplayRun() {
   hideConfirm('replayRun');
-  document.getElementById('replayStatus').textContent = 'Job gestart, wacht op resultaat...';
+  document.getElementById('replayResult').innerHTML = '';
+  document.getElementById('replayStatus').textContent = 'Bezig met starten...';
   const body = {
     symbol: document.getElementById('rpSymbol').value || 'BTCUSDT',
     days: parseInt(document.getElementById('rpDays').value) || 90,
@@ -704,11 +712,47 @@ async function doReplayRun() {
   };
   try {
     const r = await api('POST', '/cc/short/replay/run', body);
-    if (!r || !r.ok) { const d = r ? await r.json() : {}; document.getElementById('replayStatus').textContent = 'Fout: ' + (d.detail || '?'); return; }
+    if (!r || !r.ok) {
+      const d = r ? await r.json() : {};
+      document.getElementById('replayStatus').textContent = 'Fout: ' + (d.detail || JSON.stringify(d));
+      return;
+    }
     const d = await r.json();
-    document.getElementById('replayStatus').textContent = 'Job ' + (d.job_id || '?') + ' gestart. Refresh jobs om status te zien.';
-    setTimeout(loadReplayJobs, 2000);
+    const jobId = d.job_id || d.id || null;
+    document.getElementById('replayStatus').textContent = 'Job ' + (jobId || '?') + ' gestart — automatisch pollen...';
+    await loadReplayJobs();
+    if (jobId) _startReplayPoll(jobId);
   } catch(e) { document.getElementById('replayStatus').textContent = 'Fout: ' + e.message; }
+}
+
+function _startReplayPoll(jobId) {
+  if (_replayPollTimer) clearInterval(_replayPollTimer);
+  let attempts = 0;
+  const maxAttempts = 60; // max 5 min @ 5s interval
+  _replayPollTimer = setInterval(async () => {
+    attempts++;
+    if (attempts > maxAttempts) {
+      clearInterval(_replayPollTimer);
+      document.getElementById('replayStatus').textContent = 'Timeout — job duurt te lang.';
+      return;
+    }
+    try {
+      const r = await api('GET', '/cc/short/replay/result/' + jobId);
+      if (!r) return;
+      const d = await r.json();
+      if (d.status === 'done') {
+        clearInterval(_replayPollTimer);
+        document.getElementById('replayStatus').textContent = 'Klaar!';
+        await loadReplayJobs();
+        _renderReplayResult(d);
+      } else if (d.status === 'error') {
+        clearInterval(_replayPollTimer);
+        document.getElementById('replayStatus').textContent = 'Job mislukt: ' + (d.error || '?');
+      } else {
+        document.getElementById('replayStatus').textContent = 'Bezig... (status: ' + (d.status || 'running') + ', ' + attempts*5 + 's)';
+      }
+    } catch(e) {}
+  }, 5000);
 }
 
 // ── Init ──
