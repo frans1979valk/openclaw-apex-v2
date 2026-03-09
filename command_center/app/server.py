@@ -541,6 +541,30 @@ async def cc_realtime_health(request: Request, authorization: str | None = Heade
     return _ie_get("/realtime/health")
 
 
+@app.get("/cc/validation/p2-summary")
+async def cc_validation_p2(
+    request: Request,
+    hours: int = 24,
+    authorization: str | None = Header(None),
+):
+    _validate_session(authorization)
+    return _ie_get("/validation/p2-summary", {"hours": hours})
+
+
+@app.post("/cc/tuning/suggest")
+async def cc_tuning_suggest(
+    request: Request,
+    body: dict,
+    authorization: str | None = Header(None),
+):
+    _validate_session(authorization)
+    try:
+        r = requests.post(f"{INDICATOR_ENGINE_URL}/tuning/suggest", json=body, timeout=10)
+        return r.json()
+    except Exception as e:
+        raise HTTPException(502, f"indicator_engine onbereikbaar: {e}")
+
+
 @app.get("/cc/short/replay/jobs")
 async def cc_replay_jobs(request: Request, authorization: str | None = Header(None)):
     _validate_session(authorization)

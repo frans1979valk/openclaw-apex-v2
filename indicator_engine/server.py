@@ -3826,3 +3826,331 @@ def short_replay_jobs():
                             "type": j.get("type"),
                             "progress": j.get("progress")}
                      for jid, j in _replay_jobs.items()}}
+
+
+# ── Validation & Tuning ───────────────────────────────────────────────────────
+
+# KPI gate definities (groen/geel/rood)
+KPI_GATES = {
+    "missed_drop_pct":    {"green": 5.0,  "yellow": 12.0},  # % gemiste drops (lager = beter)
+    "false_alert_pct":    {"green": 20.0, "yellow": 35.0},  # % fout-positieve alerts
+    "detect_delay_p50_s": {"green": 2.0,  "yellow": 5.0},   # mediaan detectietijd in seconden
+    "fallback_spam_pct":  {"green": 15.0, "yellow": 30.0},  # % fallback dedupes
+}
+
+
+def _kpi_grade(metric: str, value: float) -> str:
+    gate = KPI_GATES.get(metric)
+    if not gate:
+        return "n/a"
+    if value <= gate["green"]:
+        return "green"
+    if value <= gate["yellow"]:
+        return "yellow"
+    return "red"
+
+
+@app.get("/validation/p2-summary")
+def validation_p2_summary(hours: int = 24):
+    """
+    24-uur validatie van P2 bundle performance.
+    KPI's: near_miss_count, high_impact_count, missed_drop_pct, false_alert_pct,
+           detect_delay_p50_s, fallback_spam_pct, top_failed_guards.
+    """
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+
+        # ── Near-miss stats ──────────────────────────────────────────────────
+        cur.execute(adapt_query("""
+            SELECT COUNT(*) FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+        """), (hours,))
+        nm_total = cur.fetchone()[0]
+
+        cur.execute(adapt_query("""
+            SELECT symbol, COUNT(*) AS cnt
+            FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            GROUP BY symbol ORDER BY cnt DESC LIMIT 10
+        """), (hours,))
+        nm_per_symbol = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute(adapt_query("""
+            SELECT failed_guard, COUNT(*) AS cnt
+            FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            GROUP BY failed_guard ORDER BY cnt DESC LIMIT 8
+        """), (hours,))
+        top_failed_guards = [{"guard": r[0], "count": r[1]} for r in cur.fetchall()]
+
+        # Missed drops: near_misses met severity_candidate major/extreme /
+        # (near_miss_major + drop_alerts_major) — wat % was niet gevangen?
+        cur.execute(adapt_query("""
+            SELECT COUNT(*) FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            AND severity_candidate IN ('major','extreme')
+        """), (hours,))
+        nm_major = cur.fetchone()[0]
+
+        # ── Alert stats ──────────────────────────────────────────────────────
+        cur.execute(adapt_query("""
+            SELECT COUNT(*) FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour')
+        """), (hours,))
+        alert_total = cur.fetchone()[0]
+
+        cur.execute(adapt_query("""
+            SELECT severity, COUNT(*) AS cnt FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour')
+            GROUP BY severity ORDER BY cnt DESC
+        """), (hours,))
+        alert_by_sev = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute(adapt_query("""
+            SELECT kind, COUNT(*) AS cnt FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour')
+            AND kind IN ('drop','spike')
+            GROUP BY kind
+        """), (hours,))
+        alert_by_kind = {r[0]: r[1] for r in cur.fetchall()}
+
+        # Drop alerts major/extreme
+        cur.execute(adapt_query("""
+            SELECT COUNT(*) FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour')
+            AND kind = 'drop' AND severity IN ('major','extreme')
+        """), (hours,))
+        drop_major_alerted = cur.fetchone()[0]
+
+        # False alert estimate: drop alerts with vol_ratio < 1.2 (laag volume = twijfelachtig)
+        cur.execute(adapt_query("""
+            SELECT COUNT(*) FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour')
+            AND kind = 'drop' AND vol_ratio < 1.2
+        """), (hours,))
+        questionable_alerts = cur.fetchone()[0]
+
+        # Kimi fallback calls — schat uit near_miss_log major/extreme voor NEAR_MISS_MAJORS
+        # met dedupe op 3-min window per symbol
+        cur.execute(adapt_query("""
+            SELECT symbol, ts_utc FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            AND severity_candidate IN ('major','extreme')
+            AND symbol IN ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT')
+            ORDER BY symbol, ts_utc
+        """), (hours,))
+        fb_rows = cur.fetchall()
+
+        # Dedupliceer: telt een call als er >= 180s zit tussen opvolgende calls per symbol
+        fb_total = 0
+        fb_deduped = 0
+        last_fb: dict = {}
+        for sym, ts in fb_rows:
+            ts_e = ts.timestamp() if hasattr(ts, "timestamp") else 0
+            if ts_e - last_fb.get(sym, 0) >= KIMI_FALLBACK_COOLDOWN_SEC:
+                fb_total += 1
+                last_fb[sym] = ts_e
+            else:
+                fb_deduped += 1
+
+        # Detection delay: spike monitor loopt elke 5s, dus maximale delay = 5s
+        # Mediaan = 2.5s (aanname uniform verdeling in 5s window)
+        detect_delay_p50 = 2.5
+
+        conn.close()
+
+        # ── Derived KPI's ────────────────────────────────────────────────────
+        total_drop_events = nm_major + drop_major_alerted
+        missed_drop_pct   = round(nm_major / total_drop_events * 100, 1) if total_drop_events > 0 else 0.0
+
+        drop_alerts = alert_by_kind.get("drop", 0)
+        false_alert_pct = round(questionable_alerts / drop_alerts * 100, 1) if drop_alerts > 0 else 0.0
+
+        fallback_total = fb_total + fb_deduped
+        fallback_spam_pct = round(fb_deduped / fallback_total * 100, 1) if fallback_total > 0 else 0.0
+
+        # ── KPI gate matrix ──────────────────────────────────────────────────
+        kpi_matrix = {
+            "missed_drop_pct":    {"value": missed_drop_pct,   "grade": _kpi_grade("missed_drop_pct",    missed_drop_pct),   "unit": "%", "green_threshold": "≤5%",  "red_threshold": ">12%"},
+            "false_alert_pct":    {"value": false_alert_pct,   "grade": _kpi_grade("false_alert_pct",    false_alert_pct),   "unit": "%", "green_threshold": "≤20%", "red_threshold": ">35%"},
+            "detect_delay_p50_s": {"value": detect_delay_p50,  "grade": _kpi_grade("detect_delay_p50_s", detect_delay_p50),  "unit": "s", "green_threshold": "<2s",  "red_threshold": ">5s"},
+            "fallback_spam_pct":  {"value": fallback_spam_pct, "grade": _kpi_grade("fallback_spam_pct",  fallback_spam_pct), "unit": "%", "green_threshold": "<15%", "red_threshold": ">30%"},
+        }
+
+        overall = "green" if all(v["grade"] == "green" for v in kpi_matrix.values()) else \
+                  "red"   if any(v["grade"] == "red"   for v in kpi_matrix.values()) else "yellow"
+
+        return {
+            "hours":              hours,
+            "generated_at":       datetime.now(timezone.utc).isoformat(),
+            "overall":            overall,
+            "kpi_matrix":         kpi_matrix,
+            "near_miss": {
+                "total":          nm_total,
+                "major_extreme":  nm_major,
+                "per_symbol":     nm_per_symbol,
+                "top_failed_guards": top_failed_guards,
+            },
+            "alerts": {
+                "total":          alert_total,
+                "by_severity":    alert_by_sev,
+                "by_kind":        alert_by_kind,
+                "drop_major_alerted": drop_major_alerted,
+                "questionable":   questionable_alerts,
+            },
+            "kimi_fallback": {
+                "calls_sent":     fb_total,
+                "deduped":        fb_deduped,
+                "spam_pct":       fallback_spam_pct,
+            },
+            "detection": {
+                "spike_monitor_interval_s": 5,
+                "detect_delay_p50_s":       detect_delay_p50,
+                "note": "Mediaan op basis van spike monitor interval (5s cycle); max delay = 5s",
+            },
+        }
+
+    except Exception as e:
+        log.error(f"[validation] Fout: {e}")
+        return {"error": str(e), "hours": hours}
+
+
+@app.post("/tuning/suggest")
+def tuning_suggest(body: dict):
+    """
+    Analyseer laatste 24h data en stel drempelaanpassingen voor.
+    Input: {symbols: [...], profile: 'safe'|'balanced'|'aggressive', hours: 24}
+    Output: lijst van threshold-voorstellen met rationale + expected_impact.
+    """
+    try:
+        profile = body.get("profile", "balanced")
+        hours   = int(body.get("hours", 24))
+        syms    = [s.upper() for s in body.get("symbols", [])] if body.get("symbols") else None
+
+        conn = get_conn()
+        cur  = conn.cursor()
+
+        # Failed guard verdeling
+        cur.execute(adapt_query("""
+            SELECT failed_guard, COUNT(*) AS cnt, AVG(volume_ratio) AS avg_vol
+            FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            GROUP BY failed_guard ORDER BY cnt DESC
+        """), (hours,))
+        guards = {r[0]: {"count": r[1], "avg_vol": round(float(r[2] or 0), 2)} for r in cur.fetchall()}
+
+        # BTC-specifieke near-misses
+        cur.execute(adapt_query("""
+            SELECT AVG(ABS(price_delta_60s)), MIN(ABS(price_delta_60s)), COUNT(*)
+            FROM near_miss_log
+            WHERE ts_utc >= NOW() - (? * INTERVAL '1 hour')
+            AND symbol = 'BTCUSDT' AND event_kind = 'btc_drop_nearmiss'
+        """), (hours,))
+        r = cur.fetchone()
+        btc_nm_avg_delta = round(float(r[0] or 0), 3)
+        btc_nm_min_delta = round(float(r[1] or 0), 3)
+        btc_nm_count     = r[2]
+
+        # Alerts kwaliteit
+        cur.execute(adapt_query("""
+            SELECT AVG(vol_ratio), PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(delta_pct))
+            FROM alerts
+            WHERE ts >= NOW() - (? * INTERVAL '1 hour') AND kind = 'drop'
+        """), (hours,))
+        r2 = cur.fetchone()
+        avg_vol_ratio_alerts = round(float(r2[0] or 0), 2)
+        p50_delta_alerts     = round(float(r2[1] or 0), 3)
+
+        conn.close()
+
+        # ── Tuning regels ────────────────────────────────────────────────────
+        suggestions = []
+
+        # Regel 1: volume guard faalt vaak → verlaag VOLUME_SURGE_RATIO
+        vol_guard_hits = guards.get("volume_minor_guard", {}).get("count", 0)
+        nm_total = sum(g["count"] for g in guards.values())
+        if nm_total > 0 and vol_guard_hits / nm_total > 0.4:
+            profile_factor = {"safe": 0.95, "balanced": 0.85, "aggressive": 0.75}.get(profile, 0.85)
+            new_ratio = round(VOLUME_SURGE_RATIO * profile_factor, 1)
+            suggestions.append({
+                "param": "VOLUME_SURGE_RATIO",
+                "current": VOLUME_SURGE_RATIO,
+                "suggested": new_ratio,
+                "rationale": f"{vol_guard_hits}/{nm_total} near-misses geblokkeerd door volume guard ({vol_guard_hits/nm_total*100:.0f}%)",
+                "expected_impact": f"~{int(vol_guard_hits * (1 - profile_factor) * 0.6)} extra alerts/24h",
+                "confidence": "medium" if vol_guard_hits > 5 else "low",
+            })
+
+        # Regel 2: BTC near-misses dicht bij major drempel → verlaag BTC_MAJOR_PCT_60S
+        if btc_nm_count > 0 and btc_nm_avg_delta > 0:
+            btc_adj = {"safe": 0, "balanced": -0.05, "aggressive": -0.1}.get(profile, -0.05)
+            new_btc_maj = round(BTC_MAJOR_PCT_60S + btc_adj, 2)
+            if new_btc_maj != BTC_MAJOR_PCT_60S:
+                suggestions.append({
+                    "param": "BTC_MAJOR_PCT_60S",
+                    "current": BTC_MAJOR_PCT_60S,
+                    "suggested": new_btc_maj,
+                    "rationale": f"BTC had {btc_nm_count} near-misses in {hours}h, gem. Δ={btc_nm_avg_delta:.3f}% (drempel: {BTC_MAJOR_PCT_60S}%)",
+                    "expected_impact": "Eerder BTC drop detectie, meer major alerts verwacht",
+                    "confidence": "high" if btc_nm_count >= 3 else "medium",
+                })
+
+        # Regel 3: Hoge avg vol ratio bij alerts → verhoog drempel (te veel false positives)
+        if avg_vol_ratio_alerts < 1.5 and avg_vol_ratio_alerts > 0:
+            profile_factor2 = {"safe": 1.15, "balanced": 1.05, "aggressive": 1.0}.get(profile, 1.05)
+            new_ratio2 = round(VOLUME_SURGE_RATIO * profile_factor2, 1)
+            if new_ratio2 != VOLUME_SURGE_RATIO and profile != "aggressive":
+                suggestions.append({
+                    "param": "VOLUME_SURGE_RATIO",
+                    "current": VOLUME_SURGE_RATIO,
+                    "suggested": new_ratio2,
+                    "rationale": f"Gem. vol_ratio bij drop alerts = {avg_vol_ratio_alerts}x (laag → mogelijk false positives)",
+                    "expected_impact": "Minder maar kwalitatievere alerts",
+                    "confidence": "medium",
+                })
+
+        # Regel 4: Cooldown-aanpassing op basis van profile
+        cd_delta = {"safe": 60, "balanced": 0, "aggressive": -60}.get(profile, 0)
+        if cd_delta != 0:
+            suggestions.append({
+                "param": "NEAR_MISS_COOLDOWN_SEC",
+                "current": NEAR_MISS_COOLDOWN_SEC,
+                "suggested": NEAR_MISS_COOLDOWN_SEC + cd_delta,
+                "rationale": f"Profile '{profile}': {'meer rust' if cd_delta > 0 else 'snellere herhaling'} gewenst",
+                "expected_impact": f"{'Minder' if cd_delta > 0 else 'Meer'} near-miss logs per burst",
+                "confidence": "high",
+            })
+
+        if not suggestions:
+            suggestions.append({
+                "param": "geen",
+                "current": None,
+                "suggested": None,
+                "rationale": f"Onvoldoende data in laatste {hours}h om betrouwbare aanpassingen te doen",
+                "expected_impact": "n/a",
+                "confidence": "low",
+            })
+
+        return {
+            "profile":     profile,
+            "hours":       hours,
+            "symbols":     syms,
+            "suggestions": suggestions,
+            "disclaimer":  "Geen auto-apply — pas thresholds handmatig aan in docker-compose.yml env vars na review",
+            "current_thresholds": {
+                "SPIKE_THRESHOLD_PCT":  SPIKE_THRESHOLD_PCT,
+                "SPIKE_MAJOR_PCT":      SPIKE_MAJOR_PCT,
+                "SPIKE_EXTREME_PCT":    SPIKE_EXTREME_PCT,
+                "VOLUME_SURGE_RATIO":   VOLUME_SURGE_RATIO,
+                "BTC_MAJOR_PCT_60S":    BTC_MAJOR_PCT_60S,
+                "BTC_EXTREME_PCT_90S":  BTC_EXTREME_PCT_90S,
+                "BTC_NEARMISS_PCT_60S": BTC_NEARMISS_PCT_60S,
+                "NEAR_MISS_COOLDOWN_SEC": NEAR_MISS_COOLDOWN_SEC,
+                "ALERT_COOLDOWN_SEC":   ALERT_COOLDOWN_SEC,
+            },
+        }
+
+    except Exception as e:
+        log.error(f"[tuning] Fout: {e}")
+        return {"error": str(e)}

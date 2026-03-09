@@ -234,6 +234,46 @@
     border-radius: 6px; font-size: .82rem; margin-top: 16px;
   }
   .dp-chart-link:hover { background: #2a5298; }
+
+  /* ── Operator info strip (3 blokken) ── */
+  #operator-strip {
+    display: flex; flex-wrap: wrap; gap: 0;
+    border-bottom: 1px solid #21262d; background: #0d1117;
+  }
+  .op-block {
+    flex: 1; min-width: 260px; padding: 8px 16px;
+    border-right: 1px solid #21262d;
+  }
+  .op-block:last-child { border-right: none; }
+  .op-block-title {
+    font-size: .59rem; text-transform: uppercase; letter-spacing: .08em;
+    color: #8b949e; margin-bottom: 5px; font-weight: 600;
+  }
+  .op-row { display: flex; gap: 6px; align-items: baseline; font-size: .73rem; line-height: 1.7; flex-wrap: wrap; }
+  .op-lbl { color: #8b949e; min-width: 80px; }
+  .op-val { color: #e6edf3; font-family: monospace; }
+  .op-val.red    { color: #f85149; }
+  .op-val.yellow { color: #d29922; }
+  .op-val.green  { color: #3fb950; }
+
+  /* Stale badge dots per symbol */
+  .ws-sym-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 3px; vertical-align: middle;
+  }
+  .ws-sym-dot.ws-ok    { background: #3fb950; }
+  .ws-sym-dot.ws-warn  { background: #d29922; }
+  .ws-sym-dot.ws-stale { background: #f85149; }
+
+  /* KPI matrix */
+  .kpi-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .kpi-pill {
+    font-size: .68rem; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+    border: 1px solid;
+  }
+  .kpi-green  { background: rgba(63,185,80,.1);  color: #3fb950; border-color: rgba(63,185,80,.3); }
+  .kpi-yellow { background: rgba(210,153,34,.1); color: #d29922; border-color: rgba(210,153,34,.3); }
+  .kpi-red    { background: rgba(248,81,73,.1);  color: #f85149; border-color: rgba(248,81,73,.3); }
 </style>
 </head>
 <body>
@@ -348,6 +388,37 @@
   " title="Handmatige universe refresh">&#8635; Universe</button>
 </div>
 
+<!-- ── Operator strip: 3 blokken ── -->
+<div id="operator-strip">
+
+  <!-- Blok 1: Waarom geen alert? (near-miss) -->
+  <div class="op-block">
+    <div class="op-block-title">Waarom geen alert?</div>
+    <div id="nm-content">
+      <div class="op-row"><span class="op-lbl">Laden...</span></div>
+    </div>
+  </div>
+
+  <!-- Blok 2: Live betrouwbaarheid (WS stale badges) -->
+  <div class="op-block">
+    <div class="op-block-title">Live betrouwbaarheid</div>
+    <div id="ws-reliability-content">
+      <div class="op-row"><span class="op-lbl">WS status:</span><span class="op-val" id="ws-global-status">—</span></div>
+      <div style="margin-top:4px; font-size:.68rem; color:#8b949e" id="ws-stale-list">Laden...</div>
+    </div>
+    <div class="kpi-grid" id="kpi-grid" style="margin-top:6px"></div>
+  </div>
+
+  <!-- Blok 3: Kimi fallback alerts -->
+  <div class="op-block">
+    <div class="op-block-title">Kimi fallback</div>
+    <div id="kimi-fallback-content">
+      <div class="op-row"><span class="op-lbl">Laden...</span></div>
+    </div>
+  </div>
+
+</div>
+
 <!-- ── Main content ── -->
 <div id="main-wrap">
   <div class="spinner" id="spinner"></div>
@@ -399,6 +470,7 @@ function logout() {
 let _signals      = [];       // van /live/signals
 let _filter       = "";
 let _prices       = {};       // sym → {price, prev, ts}
+let _wsAge        = {};       // sym.upper → epoch ms van laatste WS tick (per-symbol stale)
 let _lastSigTs    = null;     // tijdstip laatste succesvolle signal-load
 let _statusTs     = null;     // tijdstip laatste status update
 let _wsConn       = null;
@@ -440,6 +512,7 @@ function connectWS() {
       const price = parseFloat(d.c);
       const prev  = _prices[sym] ? _prices[sym].price : null;
       _prices[sym] = { price, prev, ts: Date.now() };
+      _wsAge[sym] = Date.now();   // per-symbol stale tracking
 
       // Update DOM cell if visible
       const el = document.getElementById("price-" + sym);
@@ -915,6 +988,116 @@ async function triggerUniverseRefresh() {
   } catch(e) {}
 }
 
+// ── Operator strip: near-miss / WS reliability / Kimi fallback ───────────────
+
+function _ageBadge(ageMs) {
+  if (ageMs < 60000)  return '<span class="ws-sym-dot ws-ok"></span>';
+  if (ageMs < 180000) return '<span class="ws-sym-dot ws-warn"></span>';
+  return '<span class="ws-sym-dot ws-stale"></span>';
+}
+
+async function loadNearMiss() {
+  const el = document.getElementById("nm-content");
+  if (!el) return;
+  try {
+    const r = await fetch("/cc/alerts/near-miss?limit=3", { headers: AH });
+    if (!r.ok) { el.innerHTML = '<div class="op-row"><span class="op-lbl" style="color:#8b949e">Geen data</span></div>'; return; }
+    const d = await r.json();
+    if (!d.near_misses || !d.near_misses.length) {
+      el.innerHTML = '<div class="op-row"><span class="op-lbl" style="color:#3fb950">✓ Geen near-misses</span></div>';
+      return;
+    }
+    el.innerHTML = d.near_misses.map(nm => {
+      const age = nm.ts_utc ? Math.round((Date.now() - new Date(nm.ts_utc)) / 60000) : "?";
+      const d60 = nm.price_delta_60s ? nm.price_delta_60s.toFixed(2) : "?";
+      const cls = nm.severity_candidate === "major" ? "yellow" : "";
+      return `<div class="op-row">
+        <span class="op-lbl">${nm.symbol}</span>
+        <span class="op-val ${cls}">Δ${d60}%</span>
+        <span style="color:#8b949e;font-size:.65rem">${nm.failed_guard || "?"} · ${age}m geleden</span>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    el.innerHTML = '<div class="op-row"><span style="color:#8b949e;font-size:.68rem">—</span></div>';
+  }
+}
+
+function updateWsReliability() {
+  const el = document.getElementById("ws-stale-list");
+  if (!el) return;
+  const now = Date.now();
+  const staleSyms = WS_COINS.map(s => s.toUpperCase()).filter(sym => {
+    const age = _wsAge[sym] ? now - _wsAge[sym] : now;
+    return age > 60000;
+  });
+  const warnSyms = WS_COINS.map(s => s.toUpperCase()).filter(sym => {
+    const age = _wsAge[sym] ? now - _wsAge[sym] : now;
+    return age >= 180000;
+  });
+  if (warnSyms.length === 0 && staleSyms.length === 0) {
+    el.innerHTML = '<span style="color:#3fb950">✓ Alle ' + WS_COINS.length + ' symbols live</span>';
+  } else if (warnSyms.length > 0) {
+    el.innerHTML = '<span style="color:#f85149">⚠ Stale (' + warnSyms.length + '): ' + warnSyms.slice(0,4).join(', ') + (warnSyms.length > 4 ? '...' : '') + '</span>';
+  } else {
+    el.innerHTML = '<span style="color:#d29922">⚡ Traag (' + staleSyms.length + '): ' + staleSyms.slice(0,4).join(', ') + '</span>';
+  }
+  // WS global status
+  const wsState = document.getElementById("ws-dot");
+  const isConn  = wsState && wsState.classList.contains("connected");
+  document.getElementById("ws-global-status").textContent = isConn ? "WS live" : "Fallback (REST)";
+  document.getElementById("ws-global-status").className = "op-val " + (isConn ? "green" : "yellow");
+}
+
+async function loadKpiMatrix() {
+  const el = document.getElementById("kpi-grid");
+  if (!el) return;
+  try {
+    const r = await fetch("/cc/validation/p2-summary?hours=24", { headers: AH });
+    if (!r.ok) return;
+    const d = await r.json();
+    const km = d.kpi_matrix || {};
+    const labels = {
+      missed_drop_pct:    "Missed drops",
+      false_alert_pct:    "False alerts",
+      detect_delay_p50_s: "Detect delay",
+      fallback_spam_pct:  "FB spam",
+    };
+    el.innerHTML = Object.entries(km).map(([key, v]) => {
+      const cls = "kpi-" + v.grade;
+      const val = key.endsWith("_s") ? v.value + "s" : v.value + "%";
+      return `<span class="kpi-pill ${cls}" title="${labels[key] || key}: ${v.green_threshold} / ${v.red_threshold}">${labels[key] || key}: ${val}</span>`;
+    }).join("");
+  } catch(e) {}
+}
+
+async function loadKimiFallback() {
+  const el = document.getElementById("kimi-fallback-content");
+  if (!el) return;
+  try {
+    // Gebruik near-miss als proxy (major/extreme voor NEAR_MISS_MAJORS)
+    const r = await fetch("/cc/alerts/near-miss?severity_candidate=major&limit=3", { headers: AH });
+    if (!r.ok) { el.innerHTML = '<div class="op-row"><span class="op-lbl" style="color:#8b949e">Geen data</span></div>'; return; }
+    const d = await r.json();
+    if (!d.near_misses || !d.near_misses.length) {
+      el.innerHTML = '<div class="op-row"><span class="op-lbl" style="color:#8b949e">Geen fallback activaties</span></div>';
+      return;
+    }
+    el.innerHTML = d.near_misses.map(nm => {
+      const age = nm.ts_utc ? Math.round((Date.now() - new Date(nm.ts_utc)) / 60000) : "?";
+      const d60 = nm.price_delta_60s ? nm.price_delta_60s.toFixed(2) : "?";
+      const cooldownLeft = Math.max(0, 180 - age * 60);
+      const cdStr = cooldownLeft > 0 ? ` · CD ${Math.ceil(cooldownLeft/60)}m` : " · vrij";
+      return `<div class="op-row">
+        <span class="op-lbl">${nm.symbol}</span>
+        <span class="op-val yellow">Δ${d60}%</span>
+        <span style="color:#8b949e;font-size:.65rem">${age}m${cdStr}</span>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    el.innerHTML = '<div class="op-row"><span style="color:#8b949e;font-size:.68rem">—</span></div>';
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 connectWS();
 startStaleCheck();
@@ -928,6 +1111,18 @@ _statusTimer = setInterval(loadStatus, 10_000);
 // Universe elke 5 minuten + depeg elke 30s
 setInterval(loadUniverse,   5 * 60 * 1000);
 setInterval(loadDepegAlerts, 30_000);
+
+// Operator strip — eerste laad
+loadNearMiss();
+loadKimiFallback();
+loadKpiMatrix();
+updateWsReliability();
+
+// Operator strip — refresh intervallen
+setInterval(loadNearMiss,        30_000);
+setInterval(loadKimiFallback,    60_000);
+setInterval(loadKpiMatrix,   5 * 60_000);
+setInterval(updateWsReliability, 10_000);
 </script>
 </body>
 </html>
