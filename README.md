@@ -257,7 +257,7 @@ Every potential trade signal passes through 10 sequential filters before executi
 | Charts | TradingView Lightweight Charts v4.1.3 |
 | Live prices | Binance WebSocket kline streams (40 symbols) + public REST API |
 | Auth | Telegram OTP login + session tokens |
-| AI operator | Jojo1 — autonomous operator via openclaw_gateway |
+| AI operator | Jojo1 — autonomous operator via openclaw_gateway (OpenAI) |
 | Pattern AI | Kimi (Moonshot AI) — nightly + fallback analysis |
 | Infrastructure | Docker Compose, Nginx, Cloudflare tunnel |
 | Exchange | BloFin Demo (paper trading) / BloFin Live (optional) |
