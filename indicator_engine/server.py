@@ -77,6 +77,28 @@ CREATE TABLE IF NOT EXISTS pattern_results (
     was_win BOOLEAN
 );
 CREATE INDEX IF NOT EXISTS idx_pat_lookup ON pattern_results(symbol, rsi_zone, macd_direction, bb_position, ema_alignment, btc_trend);
+
+CREATE TABLE IF NOT EXISTS near_miss_log (
+    id                 BIGSERIAL PRIMARY KEY,
+    ts_utc             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol             VARCHAR(20) NOT NULL,
+    event_kind         VARCHAR(30) NOT NULL,
+    mode_at_time       VARCHAR(10) NOT NULL DEFAULT 'normal',
+    price_delta_15s    REAL,
+    price_delta_60s    REAL,
+    price_delta_90s    REAL,
+    volume_ratio       REAL,
+    spread_bps         REAL,
+    slippage_bps       REAL,
+    passed_guards      TEXT,
+    failed_guard       TEXT,
+    failed_reason      TEXT,
+    severity_candidate VARCHAR(10),
+    correlation_id     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nm_ts   ON near_miss_log(ts_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_nm_sym  ON near_miss_log(symbol);
+CREATE INDEX IF NOT EXISTS idx_nm_kind ON near_miss_log(event_kind);
 """
 
 
@@ -425,13 +447,21 @@ def startup():
         result = universe_manager.refresh(get_conn, adapt_query)
         new_trading = universe_manager.get_trading_coins()
         if new_trading:
+            new_set = {s.upper() for s in new_trading}
             SAFE_COINS.clear()
             SAFE_COINS.extend(new_trading)
-            # Voeg nieuwe coins toe aan WS buffers (actief na volgende reconnect)
+            # Voeg nieuwe coins toe aan WS buffers
             for sym in new_trading:
                 if sym.upper() not in _live_buffers:
                     _live_buffers[sym.upper()] = deque(maxlen=_WS_BUF_SIZE)
                     _live_last_ts[sym.upper()] = 0.0
+            # Verwijder ongeldige coins uit WS buffers (zouden anders 400s geven in fallback)
+            stale = [k for k in list(_live_buffers.keys()) if k not in new_set]
+            for k in stale:
+                _live_buffers.pop(k, None)
+                _live_last_ts.pop(k, None)
+            if stale:
+                log.info(f"[universe] {len(stale)} coins verwijderd uit WS buffers: {stale[:5]}...")
             log.info(f"[universe] Refresh: {len(new_trading)} trading coins, bron={result.get('source')}")
 
     scheduler.add_job(incremental_update, "interval",
@@ -457,6 +487,18 @@ def startup():
                       seconds=60,
                       id="depeg_monitor",
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120))
+
+    # Startup mode_log entry — baseline voor backtest _get_mode_at()
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query(
+            "INSERT INTO mode_log (mode_from, mode_to, reason) VALUES (?,?,?)"
+        ), ("none", "normal", "startup"))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"[mode-db] Startup entry mislukt: {e}")
 
     scheduler.start()
     log.info(f"Scheduler gestart: update elke {UPDATE_INTERVAL_MINUTES} min, coin-watcher elke 30 min")
@@ -2033,6 +2075,103 @@ VOLUME_SURGE_RATIO   = float(os.getenv("VOLUME_SURGE_RATIO",   "1.8"))
 ALERT_COOLDOWN_SEC   = int(os.getenv("ALERT_COOLDOWN_SEC",     "300"))
 PANIC_DURATION_SEC   = int(os.getenv("PANIC_DURATION_SEC",     "90"))
 
+# BTC dedicated detection thresholds (volume optional)
+BTC_MAJOR_PCT_60S    = float(os.getenv("BTC_MAJOR_PCT_60S",   "0.7"))   # -0.7%/60s → major
+BTC_EXTREME_PCT_90S  = float(os.getenv("BTC_EXTREME_PCT_90S", "1.2"))   # -1.2%/90s → extreme
+BTC_NEARMISS_PCT_60S = float(os.getenv("BTC_NEARMISS_PCT_60S","0.6"))   # -0.6%/60s → near-miss log
+
+# Near-miss logging config
+NEAR_MISS_COOLDOWN_SEC     = int(os.getenv("NEAR_MISS_COOLDOWN_SEC",   "180"))  # 3 min per (sym, kind)
+KIMI_FALLBACK_COOLDOWN_SEC = int(os.getenv("KIMI_FALLBACK_COOLDOWN_SEC","180")) # 3 min per sym
+KIMI_PATTERN_URL           = os.getenv("KIMI_PATTERN_URL", "http://kimi_pattern_agent:8098")
+NEAR_MISS_MAJORS           = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"}  # Kimi trigger
+
+# ── Near-Miss Log ─────────────────────────────────────────────────────────────
+
+_near_miss_log: deque          = deque(maxlen=500)
+_near_miss_cooldown: dict      = {}   # (symbol, event_kind) → epoch
+_kimi_fallback_cooldown: dict  = {}   # symbol → epoch
+
+
+def _kimi_fallback_alert(nm: dict):
+    """Stuur near-miss payload naar kimi_pattern_agent /fallback-alert (achtergrond)."""
+    sym = nm["symbol"]
+    now = time.time()
+    if now - _kimi_fallback_cooldown.get(sym, 0) < KIMI_FALLBACK_COOLDOWN_SEC:
+        return
+    _kimi_fallback_cooldown[sym] = now
+    try:
+        r = req.post(f"{KIMI_PATTERN_URL}/fallback-alert", json=nm, timeout=10)
+        if r.ok:
+            log.info(f"[kimi-fallback] Alert verzonden voor {sym}: {nm.get('severity_candidate')}")
+        else:
+            log.warning(f"[kimi-fallback] Fout {r.status_code}: {r.text[:100]}")
+    except Exception as e:
+        log.warning(f"[kimi-fallback] Request fout: {e}")
+
+
+def _add_near_miss(symbol: str, event_kind: str, mode_at: str,
+                   price_delta_15s: float, price_delta_60s: float, price_delta_90s: float,
+                   vol_ratio: float, spread_bps: float, slippage_bps: float,
+                   passed_guards: list, failed_guard: str, failed_reason: str,
+                   severity_candidate: str, correlation_id: str = None) -> dict | None:
+    """Log een near-miss event naar memory + DB. Triggert Kimi fallback bij major/extreme."""
+    now = time.time()
+    key = (symbol, event_kind)
+    if now - _near_miss_cooldown.get(key, 0) < NEAR_MISS_COOLDOWN_SEC:
+        return None
+    _near_miss_cooldown[key] = now
+
+    entry = {
+        "ts_utc":            datetime.now(timezone.utc).isoformat(),
+        "symbol":            symbol,
+        "event_kind":        event_kind,
+        "mode_at_time":      mode_at,
+        "price_delta_15s":   round(price_delta_15s, 4),
+        "price_delta_60s":   round(price_delta_60s, 4),
+        "price_delta_90s":   round(price_delta_90s, 4),
+        "volume_ratio":      round(vol_ratio, 3),
+        "spread_bps":        round(spread_bps, 2),
+        "slippage_bps":      round(slippage_bps, 2),
+        "passed_guards":     passed_guards,
+        "failed_guard":      failed_guard,
+        "failed_reason":     failed_reason,
+        "severity_candidate":severity_candidate,
+        "correlation_id":    correlation_id,
+    }
+    _near_miss_log.appendleft(entry)
+
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            INSERT INTO near_miss_log
+                (symbol, event_kind, mode_at_time, price_delta_15s, price_delta_60s,
+                 price_delta_90s, volume_ratio, spread_bps, slippage_bps, passed_guards,
+                 failed_guard, failed_reason, severity_candidate, correlation_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """), (
+            symbol, event_kind, mode_at,
+            entry["price_delta_15s"], entry["price_delta_60s"], entry["price_delta_90s"],
+            entry["volume_ratio"], entry["spread_bps"], entry["slippage_bps"],
+            json.dumps(passed_guards),
+            failed_guard, failed_reason, severity_candidate, correlation_id,
+        ))
+        conn.commit()
+        cur.execute("SELECT lastval()")
+        entry["id"] = cur.fetchone()[0]
+        conn.close()
+    except Exception as e:
+        log.warning(f"[near-miss-db] {e}")
+
+    log.info(f"[near-miss] {severity_candidate.upper()} {symbol} {event_kind} | {failed_guard}: {failed_reason}")
+
+    # Kimi fallback voor major/extreme near-misses van grote coins
+    if severity_candidate in ("major", "extreme") and symbol in NEAR_MISS_MAJORS:
+        threading.Thread(target=_kimi_fallback_alert, args=(entry,), daemon=True).start()
+
+    return entry
+
 # ── Short Execution Engine — config ──────────────────────────────────────────
 
 SHORT_POT_USDT        = float(os.getenv("SHORT_POT_USDT",        "1000"))
@@ -2437,11 +2576,56 @@ def _spike_monitor_loop():
             prev_price = prev["close"]
             if prev_price <= 0:
                 continue
-            delta_pct = (price - prev_price) / prev_price * 100
+            # delta_60s: verandering t.o.v. vorige 1m-candle
+            delta_pct  = (price - prev_price) / prev_price * 100
+            # delta_90s: verandering t.o.v. 2 candles geleden (~2 min, dichtstbij 90s)
+            price_2ago = last20[-3]["close"] if len(last20) >= 3 and last20[-3]["close"] > 0 else prev_price
+            delta_90s  = (price - price_2ago) / price_2ago * 100
+            # intra-candle als proxy voor delta_15s
+            delta_15s  = (latest["close"] - latest["open"]) / latest["open"] * 100 if latest["open"] > 0 else delta_pct
+
             vol       = latest["volume"]
             avg_vol   = sum(c["volume"] for c in last20) / len(last20) if last20 else vol
             vol_ratio = round(vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
+            # ── BTC dedicated detection pad (volume optional) ────────────────
+            if sym == "BTCUSDT" and delta_pct < 0:
+                abs_60s = abs(delta_pct)
+                abs_90s = abs(delta_90s)
+                spread_bps, slip_bps = _estimate_market_quality(sym)
+
+                # Near-miss: >= BTC_NEARMISS maar < BTC_MAJOR
+                if abs_60s >= BTC_NEARMISS_PCT_60S and abs_60s < BTC_MAJOR_PCT_60S:
+                    _add_near_miss(
+                        sym, "btc_drop_nearmiss", _mode["mode"],
+                        price_delta_15s=delta_15s, price_delta_60s=delta_pct, price_delta_90s=delta_90s,
+                        vol_ratio=vol_ratio, spread_bps=spread_bps, slippage_bps=slip_bps,
+                        passed_guards=["btc_path", f"delta>{BTC_NEARMISS_PCT_60S}%"],
+                        failed_guard="btc_major_threshold",
+                        failed_reason=f"BTC delta {delta_pct:.3f}% < -{BTC_MAJOR_PCT_60S}% major threshold",
+                        severity_candidate="minor",
+                    )
+
+                # BTC major: -0.7%/60s (volume optional)
+                if abs_60s >= BTC_MAJOR_PCT_60S:
+                    btc_sev = "extreme" if abs_90s >= BTC_EXTREME_PCT_90S else "major"
+                    alert = _add_alert(sym, "drop", btc_sev,
+                                       f"BTC DROP {delta_pct:+.2f}%/60s {delta_90s:+.2f}%/90s @ {price} "
+                                       f"(vol {vol_ratio:.1f}x) [BTC-pad]",
+                                       price, delta_pct, vol_ratio)
+                    log.info(f"[btc-path] {btc_sev.upper()} BTC Δ60s={delta_pct:.2f}% Δ90s={delta_90s:.2f}%")
+
+                    # Panic escalatie via BTC-pad
+                    if btc_sev == "extreme":
+                        _panic_confirm += 1
+                        if _mode["mode"] == "normal" and _panic_confirm >= 2:
+                            _set_mode("panic", f"BTC extreme drop {delta_pct:.2f}%/60s {delta_90s:.2f}%/90s")
+                        elif _mode["mode"] == "panic":
+                            _set_mode("crash", f"BTC extreme — escalatie")
+                    if _mode["mode"] in ("panic", "crash") and _short_state["armed"]:
+                        _short_open(sym, price, delta_pct, vol_ratio)
+
+            # ── Algemene spike/drop detectie ─────────────────────────────────
             abs_d = abs(delta_pct)
             if abs_d < SPIKE_THRESHOLD_PCT:
                 continue
@@ -2452,8 +2636,33 @@ def _spike_monitor_loop():
             else:
                 severity = "minor"
 
-            if severity == "minor" and vol_ratio < 1.5:
+            # Near-miss: volume guard faalt bij minor/near-major drop
+            if delta_pct < 0 and severity == "minor" and vol_ratio < 1.5:
+                spread_bps, slip_bps = _estimate_market_quality(sym)
+                _add_near_miss(
+                    sym, "drop_vol_guard", _mode["mode"],
+                    price_delta_15s=delta_15s, price_delta_60s=delta_pct, price_delta_90s=delta_90s,
+                    vol_ratio=vol_ratio, spread_bps=spread_bps, slippage_bps=slip_bps,
+                    passed_guards=["threshold"],
+                    failed_guard="volume_minor_guard",
+                    failed_reason=f"vol_ratio {vol_ratio:.2f} < 1.5 (minor drop vereist volume surge)",
+                    severity_candidate="minor",
+                )
                 continue
+
+            # Near-miss: delta >= 80% van major drempel maar nog minor (vol ok)
+            if (delta_pct < 0 and severity == "minor" and
+                    abs_d >= SPIKE_MAJOR_PCT * 0.8 and vol_ratio >= 1.5):
+                spread_bps, slip_bps = _estimate_market_quality(sym)
+                _add_near_miss(
+                    sym, "near_major_drop", _mode["mode"],
+                    price_delta_15s=delta_15s, price_delta_60s=delta_pct, price_delta_90s=delta_90s,
+                    vol_ratio=vol_ratio, spread_bps=spread_bps, slippage_bps=slip_bps,
+                    passed_guards=["threshold", "volume_surge"],
+                    failed_guard="major_threshold",
+                    failed_reason=f"delta {delta_pct:.3f}% > -{SPIKE_MAJOR_PCT}% major threshold (80% bereikt)",
+                    severity_candidate="minor",
+                )
 
             kind = "spike" if delta_pct > 0 else "drop"
             _add_alert(sym, kind, severity,
@@ -2616,6 +2825,77 @@ def alerts_high_impact(
         except Exception:
             pass
     return {"alerts": items[:limit], "total": len(items)}
+
+
+@app.get("/alerts/near-miss")
+def alerts_near_miss(
+    since: str = None,
+    symbol: str = None,
+    event_kind: str = None,
+    failed_guard: str = None,
+    severity_candidate: str = None,
+    limit: int = 50,
+):
+    """Near-miss events: drops die bijna getriggerd hebben maar door een guard geblokkeerd werden.
+    Leest altijd uit DB voor consistentie over restarts.
+    """
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        clauses = []
+        params  = []
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        if event_kind:
+            clauses.append("event_kind = ?")
+            params.append(event_kind)
+        if failed_guard:
+            clauses.append("failed_guard = ?")
+            params.append(failed_guard)
+        if severity_candidate:
+            clauses.append("severity_candidate = ?")
+            params.append(severity_candidate)
+        if since:
+            try:
+                datetime.fromisoformat(since)   # validate
+                clauses.append("ts_utc >= ?::timestamptz")
+                params.append(since)
+            except Exception:
+                pass
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        cur.execute(adapt_query(f"""
+            SELECT id, ts_utc, symbol, event_kind, mode_at_time,
+                   price_delta_15s, price_delta_60s, price_delta_90s,
+                   volume_ratio, spread_bps, slippage_bps,
+                   passed_guards, failed_guard, failed_reason,
+                   severity_candidate, correlation_id
+            FROM near_miss_log {where}
+            ORDER BY ts_utc DESC LIMIT ?
+        """), params)
+        rows = cur.fetchall()
+        cols = ["id","ts_utc","symbol","event_kind","mode_at_time",
+                "price_delta_15s","price_delta_60s","price_delta_90s",
+                "volume_ratio","spread_bps","slippage_bps",
+                "passed_guards","failed_guard","failed_reason",
+                "severity_candidate","correlation_id"]
+        items = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            d["ts_utc"] = d["ts_utc"].isoformat() if hasattr(d["ts_utc"], "isoformat") else str(d["ts_utc"])
+            try:
+                d["passed_guards"] = json.loads(d["passed_guards"]) if d["passed_guards"] else []
+            except Exception:
+                pass
+            items.append(d)
+        conn.close()
+        return {"near_misses": items, "total": len(items)}
+    except Exception as e:
+        log.warning(f"[near-miss-endpoint] DB fout: {e}")
+        # Fallback op in-memory
+        items = list(_near_miss_log)
+        return {"near_misses": items[:limit], "total": len(items), "source": "memory"}
 
 
 # ── Universe endpoints ────────────────────────────────────────────────────────

@@ -412,3 +412,26 @@ CREATE TABLE IF NOT EXISTS universe_history (
     rank_count  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_universe_history_ts ON universe_history(ts DESC);
+
+-- ── Near-Miss Log ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS near_miss_log (
+    id                 BIGSERIAL PRIMARY KEY,
+    ts_utc             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol             VARCHAR(20) NOT NULL,
+    event_kind         VARCHAR(30) NOT NULL,
+    mode_at_time       VARCHAR(10) NOT NULL DEFAULT 'normal',
+    price_delta_15s    REAL,
+    price_delta_60s    REAL,
+    price_delta_90s    REAL,
+    volume_ratio       REAL,
+    spread_bps         REAL,
+    slippage_bps       REAL,
+    passed_guards      TEXT,
+    failed_guard       TEXT,
+    failed_reason      TEXT,
+    severity_candidate VARCHAR(10),
+    correlation_id     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nm_ts   ON near_miss_log(ts_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_nm_sym  ON near_miss_log(symbol);
+CREATE INDEX IF NOT EXISTS idx_nm_kind ON near_miss_log(event_kind);

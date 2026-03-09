@@ -482,3 +482,63 @@ def ohlcv_status():
 def signal_stats():
     """Signaal performance statistieken uit de DB."""
     return get_signal_stats()
+
+
+@app.post("/fallback-alert")
+def fallback_alert(payload: dict):
+    """
+    Ontvangt een near-miss payload van indicator_engine.
+    Stuurt direct een Telegram waarschuwing naar het trading kanaal.
+    Geen Kimi API call — snel + no-cost.
+    """
+    sym      = payload.get("symbol", "?")
+    kind     = payload.get("event_kind", "?")
+    sev      = payload.get("severity_candidate", "?")
+    mode_at  = payload.get("mode_at_time", "?")
+    d60      = payload.get("price_delta_60s", 0.0)
+    d90      = payload.get("price_delta_90s", 0.0)
+    vol_r    = payload.get("volume_ratio", 0.0)
+    spread   = payload.get("spread_bps", 0.0)
+    f_guard  = payload.get("failed_guard", "?")
+    f_reason = payload.get("failed_reason", "?")
+    ts       = payload.get("ts_utc", datetime.now(timezone.utc).isoformat())
+
+    sev_icon = {"minor": "⚠️", "major": "🔴", "extreme": "🚨"}.get(sev, "⚠️")
+
+    msg_lines = [
+        f"{sev_icon} <b>Kimi Fallback Alert — Near-Miss</b>",
+        f"",
+        f"<b>Coin:</b> {sym}",
+        f"<b>Event:</b> {kind}",
+        f"<b>Severity kandidaat:</b> {sev.upper()}",
+        f"<b>Mode op moment:</b> {mode_at}",
+        f"",
+        f"<b>Δ 60s:</b> {d60:+.3f}%",
+        f"<b>Δ 90s:</b> {d90:+.3f}%",
+        f"<b>Volume ratio:</b> {vol_r:.2f}x",
+        f"<b>Spread:</b> {spread:.1f} bps",
+        f"",
+        f"<b>Niet getriggerd door:</b> {f_guard}",
+        f"<b>Reden:</b> {f_reason}",
+        f"",
+        f"<b>Aanbeveling:</b> Monitor {sym} actief — primaire bot triggerde niet volledig.",
+        f"<i>{ts[:16]} UTC</i>",
+    ]
+    msg = "\n".join(msg_lines)
+
+    log.warning(f"[fallback-alert] {sev.upper()} {sym} {kind}: {f_reason}")
+
+    if TG_BOT_TOKEN and TG_CHAT_ID:
+        try:
+            req.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            log.info(f"[fallback-alert] Telegram verstuurd voor {sym}")
+        except Exception as e:
+            log.error(f"[fallback-alert] Telegram fout: {e}")
+    else:
+        log.info(f"[fallback-alert] Geen TG config — alert gelogd: {msg[:100]}")
+
+    return {"ok": True, "symbol": sym, "severity": sev, "telegram_sent": bool(TG_BOT_TOKEN and TG_CHAT_ID)}

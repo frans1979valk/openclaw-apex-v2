@@ -10,9 +10,10 @@ import requests as req
 log = logging.getLogger("universe_manager")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-COINGECKO_URL  = "https://api.coingecko.com/api/v3/coins/markets"
-MIN_VOLUME_USD = float(os.getenv("UNIVERSE_MIN_VOLUME_USD", "30_000_000"))  # 30M USDT/24h
-MIN_MCAP_USD   = float(os.getenv("UNIVERSE_MIN_MCAP_USD",   "100_000_000")) # 100M USD
+COINGECKO_URL        = "https://api.coingecko.com/api/v3/coins/markets"
+BINANCE_EXINFO_URL   = "https://api.binance.com/api/v3/exchangeInfo"
+MIN_VOLUME_USD       = float(os.getenv("UNIVERSE_MIN_VOLUME_USD", "30_000_000"))  # 30M USDT/24h
+MIN_MCAP_USD         = float(os.getenv("UNIVERSE_MIN_MCAP_USD",   "100_000_000")) # 100M USD
 
 # Bekende stablecoins (CoinGecko IDs)
 STABLECOIN_IDS = frozenset({
@@ -66,6 +67,27 @@ def _to_binance(sym: str) -> str:
     return s if s.endswith("USDT") else s + "USDT"
 
 
+# ── Binance validation ────────────────────────────────────────────────────────
+def _fetch_binance_spot_symbols() -> set:
+    """Haalt alle actieve USDT spot pairs van Binance (geen API-key nodig)."""
+    try:
+        r = req.get(BINANCE_EXINFO_URL, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        syms = {
+            s["symbol"]
+            for s in data.get("symbols", [])
+            if s.get("quoteAsset") == "USDT"
+            and s.get("status") == "TRADING"
+            and s.get("isSpotTradingAllowed", False)
+        }
+        log.info(f"[universe] Binance spot: {len(syms)} USDT pairs geladen")
+        return syms
+    except Exception as e:
+        log.warning(f"[universe] Binance exchange info mislukt: {e} — geen symbool-filter")
+        return set()  # leeg = fail-open (alle coins door)
+
+
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 def _fetch_coingecko() -> list:
     """Haalt top-60 coins van CoinGecko (gratis, geen API-key)."""
@@ -87,8 +109,11 @@ def _fetch_coingecko() -> list:
     return []
 
 
-def _build_universe(raw: list, source: str) -> list:
-    """Verwerk ruwe CoinGecko data naar universe list (max 50 coins)."""
+def _build_universe(raw: list, source: str, valid_binance: set = None) -> list:
+    """Verwerk ruwe CoinGecko data naar universe list (max 50 coins).
+
+    valid_binance: set van actieve Binance USDT spot symbols. Als leeg/None → geen filter.
+    """
     result = []
     rank   = 0
     seen   = set()
@@ -107,6 +132,11 @@ def _build_universe(raw: list, source: str) -> list:
         if bsym in seen:
             continue
         seen.add(bsym)
+
+        # Binance spot validatie — skip als symbool niet bestaat op Binance
+        if valid_binance and bsym not in valid_binance:
+            log.info(f"[universe] {bsym} niet op Binance spot — overgeslagen")
+            continue
 
         rank += 1
         if rank > 50:
@@ -174,9 +204,10 @@ def refresh(get_conn_fn, adapt_query_fn) -> dict:
     """
     global _universe, _last_refresh, _refresh_source
 
-    raw    = _fetch_coingecko()
-    source = "coingecko" if raw else "fallback"
-    new_u  = _build_universe(raw, source) if raw else _fallback_universe()
+    raw           = _fetch_coingecko()
+    valid_binance = _fetch_binance_spot_symbols()
+    source        = "coingecko" if raw else "fallback"
+    new_u         = _build_universe(raw, source, valid_binance) if raw else _fallback_universe()
 
     if not new_u:
         return {"ok": False, "error": "Lege universe na verwerking"}
@@ -211,6 +242,18 @@ def refresh(get_conn_fn, adapt_query_fn) -> dict:
                 c["active_for_monitoring"], c["data_quality_score"],
                 c["source"],
             ))
+
+        # Deactiveer coins die niet meer in de nieuwe universe zitten
+        new_syms = tuple(c["symbol"] for c in new_u)
+        placeholders = ",".join(["?"] * len(new_syms))
+        cur.execute(adapt_query_fn(f"""
+            UPDATE universe_coins
+            SET active_for_trading=FALSE, active_for_monitoring=FALSE, updated_at=NOW()
+            WHERE symbol NOT IN ({placeholders})
+        """), new_syms)
+        deactivated = cur.rowcount
+        if deactivated:
+            log.info(f"[universe] {deactivated} coins gedeactiveerd (niet meer in universe)")
 
         cur.execute(adapt_query_fn("""
             INSERT INTO universe_history (coins_json, source, rank_count)

@@ -479,6 +479,32 @@ async def cc_alerts(
     return _ie_get("/alerts/high-impact", params)
 
 
+@app.get("/cc/alerts/near-miss")
+async def cc_near_miss(
+    request: Request,
+    symbol: str = None,
+    event_kind: str = None,
+    failed_guard: str = None,
+    severity_candidate: str = None,
+    since: str = None,
+    limit: int = 50,
+    authorization: str | None = Header(None),
+):
+    _validate_session(authorization)
+    params = {"limit": limit}
+    if symbol:
+        params["symbol"] = symbol
+    if event_kind:
+        params["event_kind"] = event_kind
+    if failed_guard:
+        params["failed_guard"] = failed_guard
+    if severity_candidate:
+        params["severity_candidate"] = severity_candidate
+    if since:
+        params["since"] = since
+    return _ie_get("/alerts/near-miss", params)
+
+
 # ── Universe ─────────────────────────────────────────────────────────────────
 
 @app.get("/cc/universe/current")
