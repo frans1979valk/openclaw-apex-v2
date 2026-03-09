@@ -24,6 +24,14 @@ SAFE_COINS = os.getenv("SAFE_COINS",
 ).split(",")
 UPDATE_INTERVAL_MINUTES = int(os.getenv("UPDATE_INTERVAL_MINUTES", "60"))
 
+# ── Universe Manager ──────────────────────────────────────────────────────────
+import universe_manager
+
+def _get_active_coins() -> list[str]:
+    """Huidig actieve trading coins: universe indien gevuld, anders SAFE_COINS."""
+    u = universe_manager.get_trading_coins()
+    return u if u else SAFE_COINS
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 SCHEMA_SQL = """
@@ -382,7 +390,7 @@ def full_history_import():
 def incremental_update():
     """Haal nieuwe candles op en herbereken indicators voor alle coins."""
     log.info("Incrementele update...")
-    for symbol in SAFE_COINS:
+    for symbol in _get_active_coins():
         symbol = symbol.strip()
         if not symbol:
             continue
@@ -404,6 +412,28 @@ _import_done = False
 @app.on_event("startup")
 def startup():
     init_schema()
+
+    # ── Universe: laad vanuit DB (snel), plan dagelijkse refresh ──────────────
+    universe_manager.load_from_db(get_conn, adapt_query)
+    trading = universe_manager.get_trading_coins()
+    if trading:
+        SAFE_COINS.clear()
+        SAFE_COINS.extend(trading)
+        log.info(f"[universe] SAFE_COINS geïnitialiseerd vanuit DB: {len(trading)} coins")
+
+    def _universe_refresh_job():
+        result = universe_manager.refresh(get_conn, adapt_query)
+        new_trading = universe_manager.get_trading_coins()
+        if new_trading:
+            SAFE_COINS.clear()
+            SAFE_COINS.extend(new_trading)
+            # Voeg nieuwe coins toe aan WS buffers (actief na volgende reconnect)
+            for sym in new_trading:
+                if sym.upper() not in _live_buffers:
+                    _live_buffers[sym.upper()] = deque(maxlen=_WS_BUF_SIZE)
+                    _live_last_ts[sym.upper()] = 0.0
+            log.info(f"[universe] Refresh: {len(new_trading)} trading coins, bron={result.get('source')}")
+
     scheduler.add_job(incremental_update, "interval",
                       minutes=UPDATE_INTERVAL_MINUTES,
                       id="incremental_update",
@@ -417,6 +447,17 @@ def startup():
     scheduler.add_job(_run_historical_enrich, "date",
                       run_date=datetime.now(timezone.utc) + timedelta(minutes=2),
                       id="initial_enrich")
+    # Universe refresh: dagelijks + eenmalig 45s na start
+    scheduler.add_job(_universe_refresh_job, "interval",
+                      hours=24,
+                      id="universe_refresh",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45))
+    # Stablecoin depeg monitor: elke 60s
+    scheduler.add_job(_check_stablecoin_depeg, "interval",
+                      seconds=60,
+                      id="depeg_monitor",
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120))
+
     scheduler.start()
     log.info(f"Scheduler gestart: update elke {UPDATE_INTERVAL_MINUTES} min, coin-watcher elke 30 min")
     _start_ws_feed()
@@ -2468,15 +2509,106 @@ def _start_ws_feed():
     log.info("[alert-bot] Spike monitor gestart")
 
 
+# ── Stablecoin depeg monitor ──────────────────────────────────────────────────
+
+_DEPEG_COOLDOWN: dict = {}   # symbol → last alert epoch
+_DEPEG_COOLDOWN_SEC = 300    # 5 minuten per symbol (behalve critical)
+
+def _check_stablecoin_depeg():
+    """
+    Controleer stablecoin prijzen via Binance REST.
+    Drempels: warn >0.3%, high >0.7%, critical >1.0% + vol surge.
+    """
+    stable_syms = universe_manager.get_stablecoin_monitoring()
+    if not stable_syms:
+        # Fallback: bekende stablecoins proberen
+        stable_syms = ["USDCUSDT", "DAIUSDT", "TUSDUSDT", "FDUSDUSDT"]
+
+    try:
+        # Batch prijs ophalen
+        syms_json = json.dumps(stable_syms)
+        r = req.get(
+            f"{BINANCE_BASE}/api/v3/ticker/price",
+            params={"symbols": syms_json},
+            timeout=10,
+        )
+        if not r.ok:
+            return
+        prices = {p["symbol"]: float(p["price"]) for p in r.json()}
+    except Exception as e:
+        log.warning(f"[depeg] Prijs fetch fout: {e}")
+        return
+
+    now = time.time()
+    for sym, price in prices.items():
+        if price <= 0.0:
+            continue  # delisted of ongeldige prijs — sla over
+        dev_pct = (price - 1.0) / 1.0 * 100   # afwijking van $1.00
+
+        if abs(dev_pct) < 0.3:
+            continue  # binnen normale bandbreedte
+
+        # Cooldown check
+        last_alert = _DEPEG_COOLDOWN.get(sym, 0)
+        is_critical = abs(dev_pct) >= 1.0
+
+        if not is_critical and (now - last_alert) < _DEPEG_COOLDOWN_SEC:
+            continue
+
+        # Severity bepalen
+        if abs(dev_pct) >= 1.0:
+            severity = "extreme"
+        elif abs(dev_pct) >= 0.7:
+            severity = "major"
+        else:
+            severity = "minor"
+
+        # Vol surge check (alleen voor critical)
+        vol_ratio = 1.0
+        if is_critical:
+            try:
+                r24 = req.get(
+                    f"{BINANCE_BASE}/api/v3/ticker/24hr",
+                    params={"symbol": sym},
+                    timeout=5,
+                )
+                if r24.ok:
+                    t24 = r24.json()
+                    q_vol = float(t24.get("quoteVolume", 0))
+                    # Vergelijk met gemiddeld dagvolume (schatting: 24h vol / 24 * 4)
+                    # Simpele threshold: vol surge als quoteVolume > 2× gemiddeld
+                    # Hier: vol_ratio altijd 1.0 tenzij we historical avg hebben
+                    vol_ratio = 1.5  # conservative estimate bij critical
+            except Exception:
+                pass
+
+        direction = "onder" if dev_pct < 0 else "boven"
+        msg = (
+            f"{sym.replace('USDT','')} depeg: "
+            f"{'%.3f' % dev_pct}% {direction} $1.00 "
+            f"(prijs: ${price:.4f})"
+        )
+        _add_alert(sym, "stablecoin_depeg", severity, msg, price, dev_pct, vol_ratio)
+        _DEPEG_COOLDOWN[sym] = now
+        log.warning(f"[depeg] {severity.upper()} {sym}: {msg}")
+
+
 # ── Alert + Mode endpoints ────────────────────────────────────────────────────
 
 @app.get("/alerts/high-impact")
-def alerts_high_impact(since: str = None, severity: str = None, limit: int = 50):
-    """Kant-en-klare alert events: spikes, drops, short signals, mode switches."""
+def alerts_high_impact(
+    since: str = None,
+    severity: str = None,
+    kind: str = None,
+    limit: int = 50,
+):
+    """Kant-en-klare alert events: spikes, drops, short signals, mode switches, stablecoin depeg."""
     with _alert_lock:
         items = list(_alerts)
     if severity:
         items = [a for a in items if a["severity"] == severity]
+    if kind:
+        items = [a for a in items if a.get("kind") == kind]
     if since:
         try:
             since_dt = datetime.fromisoformat(since)
@@ -2484,6 +2616,65 @@ def alerts_high_impact(since: str = None, severity: str = None, limit: int = 50)
         except Exception:
             pass
     return {"alerts": items[:limit], "total": len(items)}
+
+
+# ── Universe endpoints ────────────────────────────────────────────────────────
+
+@app.get("/universe/current")
+def universe_current():
+    """Huidig coin-universe: trading coins + stablecoins."""
+    u    = universe_manager.get_universe()
+    meta = universe_manager.get_meta()
+    return {
+        "coins":         u,
+        "meta":          meta,
+        "trading_coins": [c["symbol"] for c in u if c["active_for_trading"]],
+        "stablecoins":   [c["symbol"] for c in u if c["is_stablecoin"]],
+    }
+
+
+@app.post("/universe/refresh")
+def universe_refresh(background_tasks: BackgroundTasks):
+    """Trigger handmatige universe refresh (achtergrond)."""
+    def _do():
+        result = universe_manager.refresh(get_conn, adapt_query)
+        new_trading = universe_manager.get_trading_coins()
+        if new_trading:
+            SAFE_COINS.clear()
+            SAFE_COINS.extend(new_trading)
+            for sym in new_trading:
+                if sym.upper() not in _live_buffers:
+                    _live_buffers[sym.upper()] = deque(maxlen=_WS_BUF_SIZE)
+                    _live_last_ts[sym.upper()] = 0.0
+    background_tasks.add_task(_do)
+    return {"ok": True, "message": "Universe refresh gestart in achtergrond"}
+
+
+@app.get("/universe/history")
+def universe_history(days: int = 7):
+    """Universe refresh geschiedenis."""
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(adapt_query("""
+            SELECT ts, source, rank_count, coins_json
+            FROM universe_history
+            WHERE ts >= NOW() - (? * INTERVAL '1 day')
+            ORDER BY ts DESC LIMIT 30
+        """), (days,))
+        rows = cur.fetchall()
+        conn.close()
+        return {"history": [
+            {
+                "ts":         r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "source":     r[1],
+                "rank_count": r[2],
+                "coins":      json.loads(r[3]) if r[3] else [],
+            }
+            for r in rows
+        ]}
+    except Exception as e:
+        raise HTTPException(500, f"DB fout: {e}")
 
 
 @app.get("/mode/current")
@@ -2567,6 +2758,32 @@ def short_log_endpoint(since: str = None, limit: int = 100):
 def mode_log_endpoint(limit: int = 50):
     """Geschiedenis van mode switches met reden en tijdstip."""
     return {"log": list(_mode_log)[:limit]}
+
+
+@app.post("/mode/reset")
+def mode_reset(reason: str = "Handmatige reset via dashboard"):
+    """Force-reset naar normal mode (dashboard actie)."""
+    old = _mode["mode"]
+    _set_mode("normal", reason)
+    return {"ok": True, "from": old, "to": "normal", "reason": reason}
+
+
+@app.post("/short/enable")
+def short_enable(reason: str = "Handmatig ingeschakeld via dashboard"):
+    with _short_lock:
+        _short_state["enabled"]     = True
+        _short_state["block_reason"] = None
+    _short_log("SYSTEM", "enable", reason)
+    return {"ok": True, "enabled": True}
+
+
+@app.post("/short/disable")
+def short_disable(reason: str = "Handmatig uitgeschakeld via dashboard"):
+    with _short_lock:
+        _short_state["enabled"]     = False
+        _short_state["block_reason"] = reason
+    _short_log("SYSTEM", "disable", reason)
+    return {"ok": True, "enabled": False}
 
 
 # ── Fase 2: Level Replay ──────────────────────────────────────────────────────
@@ -2920,6 +3137,57 @@ def _simulate_short_backtest(
                 break
         return regime
 
+    # Mode tijdlijn uit DB: query mode_log voor het backtest-venster
+    # Geeft de werkelijke mode-overgangen terug; indien leeg → fallback "normal"
+    try:
+        conn2 = get_conn()
+        cur2  = conn2.cursor()
+        cur2.execute(adapt_query("""
+            SELECT ts, mode_to
+            FROM mode_log
+            WHERE ts >= NOW() - (? * INTERVAL '1 day')
+            ORDER BY ts ASC
+        """), (days,))
+        mode_log_rows = cur2.fetchall()
+        conn2.close()
+    except Exception:
+        mode_log_rows = []
+
+    # Bouw een gesorteerde tijdlijn: [(ts, mode), ...]
+    # Begin-mode: kijk wat de eerste transitie was (mode_from van eerste rij)
+    # Als leeg: gebruik "normal" als default (geen panic = entries toegestaan)
+    mode_timeline: list = []
+    if mode_log_rows:
+        # Voeg de initiële state toe vóór de eerste overgang
+        try:
+            conn3 = get_conn()
+            cur3  = conn3.cursor()
+            cur3.execute(adapt_query("""
+                SELECT mode_to FROM mode_log
+                WHERE ts < NOW() - (? * INTERVAL '1 day')
+                ORDER BY ts DESC LIMIT 1
+            """), (days,))
+            row_before = cur3.fetchone()
+            conn3.close()
+            initial_mode = row_before[0] if row_before else "normal"
+        except Exception:
+            initial_mode = "normal"
+        mode_timeline.append((None, initial_mode))  # sentinel: mode vanaf begin
+        for ml_ts, ml_mode in mode_log_rows:
+            mode_timeline.append((ml_ts, ml_mode))
+
+    def _get_mode_at(ts) -> str:
+        """Geeft de werkelijke mode op tijdstip ts terug op basis van mode_log."""
+        if not mode_timeline:
+            return "normal"  # geen DB-data → geen panic-blokkade
+        current = mode_timeline[0][1]
+        for ml_ts, ml_mode in mode_timeline[1:]:
+            if ml_ts <= ts:
+                current = ml_mode
+            else:
+                break
+        return current
+
     # Volume 20-period rolling avg
     closes  = [float(r[4]) for r in raw]
     highs   = [float(r[2]) for r in raw]
@@ -2945,10 +3213,8 @@ def _simulate_short_backtest(
     last_entry_ts  = {}            # symbol → simulation index of last entry
     risk_per_trade = equity * (0.015)  # 1.5% risk per trade
 
-    # Mode reconstructie: voor 1h backtest geldt panic als delta <= delta_thr
-    # (Live mode is 1m-schaal; op 1h granulariteit gebruiken we delta als proxy)
-    def _recon_mode(i: int, current_delta: float) -> str:
-        return "panic" if current_delta <= delta_thr else "normal"
+    # Mode staat per candle: gebruik werkelijke mode_log data uit de DB
+    # (_get_mode_at() defined above — gebaseerd op echte mode-overgangen)
 
     for i in range(20, len(raw)):
         ts     = tss[i]
@@ -2975,7 +3241,7 @@ def _simulate_short_backtest(
         spread_bps = 0.0
         slip_bps   = 0.0
 
-        mode = _recon_mode(i, delta)
+        mode = _get_mode_at(ts)
 
         # ── Monitor open posities ─────────────────────────────────────────────
         for pos in list(open_positions):

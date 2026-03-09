@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
 COPY db_compat.py .
+COPY universe_manager.py .
 
 EXPOSE 8099
 

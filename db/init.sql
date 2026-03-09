@@ -384,3 +384,31 @@ CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_interval ON ohlcv_history(symbol, in
 CREATE INDEX IF NOT EXISTS idx_market_events_ts ON market_events(ts);
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
 CREATE INDEX IF NOT EXISTS idx_proposals_v2_status ON proposals_v2(status);
+
+-- ── Universe Coins ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS universe_coins (
+    id                      SERIAL PRIMARY KEY,
+    symbol                  TEXT NOT NULL UNIQUE,
+    name                    TEXT,
+    rank                    INTEGER,
+    market_cap_usd          BIGINT,
+    volume_24h_usd          BIGINT,
+    is_stablecoin           BOOLEAN DEFAULT FALSE,
+    active_for_trading      BOOLEAN DEFAULT TRUE,
+    active_for_monitoring   BOOLEAN DEFAULT TRUE,
+    data_quality_score      REAL DEFAULT 0.0,
+    source                  TEXT,
+    updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_universe_rank   ON universe_coins(rank);
+CREATE INDEX IF NOT EXISTS idx_universe_active ON universe_coins(active_for_trading);
+CREATE INDEX IF NOT EXISTS idx_universe_stable ON universe_coins(is_stablecoin);
+
+CREATE TABLE IF NOT EXISTS universe_history (
+    id          SERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    coins_json  TEXT,
+    source      TEXT,
+    rank_count  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_universe_history_ts ON universe_history(ts DESC);

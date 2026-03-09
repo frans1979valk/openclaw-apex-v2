@@ -460,14 +460,53 @@ async def cc_short_log(request: Request, since: str = None, limit: int = 100, au
 
 
 @app.get("/cc/alerts/high-impact")
-async def cc_alerts(request: Request, severity: str = None, limit: int = 50, since: str = None, authorization: str | None = Header(None)):
+async def cc_alerts(
+    request: Request,
+    severity: str = None,
+    kind: str = None,
+    limit: int = 50,
+    since: str = None,
+    authorization: str | None = Header(None),
+):
     _validate_session(authorization)
     params = {"limit": limit}
     if severity:
         params["severity"] = severity
+    if kind:
+        params["kind"] = kind
     if since:
         params["since"] = since
     return _ie_get("/alerts/high-impact", params)
+
+
+# ── Universe ─────────────────────────────────────────────────────────────────
+
+@app.get("/cc/universe/current")
+async def cc_universe_current(request: Request, authorization: str | None = Header(None)):
+    """Huidig coin-universe: trading coins + stablecoins."""
+    _validate_session(authorization)
+    return _ie_get("/universe/current")
+
+
+@app.post("/cc/universe/refresh")
+async def cc_universe_refresh(request: Request, authorization: str | None = Header(None)):
+    """Trigger handmatige universe refresh."""
+    email = _validate_session(authorization)
+    ip    = request.client.host if request.client else "?"
+    result = _ie_post("/universe/refresh")
+    _audit("universe_refresh", email, ip, "ok")
+    return result
+
+
+@app.get("/cc/universe/history")
+async def cc_universe_history(
+    request: Request,
+    days: int = 7,
+    authorization: str | None = Header(None),
+):
+    """Universe refresh geschiedenis."""
+    _validate_session(authorization)
+    return _ie_get("/universe/history", {"days": days})
 
 
 @app.get("/cc/realtime/health")
